@@ -20,13 +20,14 @@ from transformers.models.llama.modeling_llama import BaseModelOutputWithPast
 #from models.backbone.llama_nar import DiffLlama
 #from models.backbone.aadit import AADiT
 #from models.backbone.dit import DiT
-from models.layers.transformer_decoder import Transformer_Decoder, AA_Transformer_Decoder
+from models.layers.transformer_decoder import Transformer_Decoder
 from models.layers.patch_embed import PatchEmbed
 from models.layers.mlp import Mlp
 from models.layers.modules import (SoftEmbedding, 
                                 ConvNeXtV2Block,
                                 ConvPositionEmbedding,
                                 SinusPositionEmbedding)
+
 
 class InputEmbedding(nn.Module):
     def __init__(self, x_dim, cond_dim, out_dim):
@@ -67,7 +68,7 @@ class FlowMatchingTransformer(nn.Module):
         pre_dim = 128
 
         self.visual_transformer = Transformer_Decoder(**cfg.visual_transformer.arch)
-        self.av_transformer = AA_Transformer_Decoder(**cfg.av_transformer.arch)
+        self.av_transformer = Transformer_Decoder(**cfg.av_transformer.arch)
         
         self.loc_embedding = SinusPositionEmbedding(dim=pre_dim)
         self.loc_mlp = nn.Linear(3*pre_dim, self.v_dim)
@@ -83,7 +84,7 @@ class FlowMatchingTransformer(nn.Module):
         self.time_interval_embedding = SinusPositionEmbedding(dim=pre_dim)
         self.time_interval_mlp = nn.Linear(pre_dim, self.hidden_size)
 
-        self.out_proj = Mlp(in_features=2 * self.hidden_size, hidden_features=self.hidden_size, out_features=self.hidden_size)
+        self.out_proj = Mlp(in_features=self.hidden_size, hidden_features=self.hidden_size * 2, out_features=self.hidden_size)
         
         self.reset_parameters()
        
@@ -173,9 +174,12 @@ class FlowMatchingTransformer(nn.Module):
 
     def audiovisual_encoder(self, ref_view_av_tokens, tgt_view_av_tokens):
         all_view_av_tokens = torch.cat([ref_view_av_tokens, tgt_view_av_tokens], dim = 1)#(B, N, t+2, dim)
-        tgt_ir_hidden_states = self.av_transformer(all_view_av_tokens)#(B, N, t+2, dim)
+        B, N, T, C = all_view_av_tokens.shape
+        all_view_av_tokens = rearrange(all_view_av_tokens, "b n t c -> b (n t) c")
+        all_ir_hidden_states = self.av_transformer(all_view_av_tokens)#(B, (N * t+2), dim)
+        all_ir_hidden_states = rearrange(all_ir_hidden_states, "b (n t) c -> b n t c", n = N)
         
-        return tgt_ir_hidden_states
+        return all_ir_hidden_states
 
     def forward(self, ir_z, cc_depth_map, cc_src_loc):
         """

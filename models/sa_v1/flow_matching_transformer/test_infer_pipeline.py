@@ -13,8 +13,8 @@ import random
 import math
 import numpy as np
 
-from models.aa_v1.flow_matching_transformer.fmt_model import FlowMatchingTransformer
-from models.aa_v1.base.dac_codec import DAC
+from models.sa_v1.flow_matching_transformer.fmt_model import FlowMatchingTransformer
+from models.sa_v1.base.dac_codec import DAC
 from utils.util import load_config
 
 

@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import librosa
 import auraloss 
 import torch.nn as nn
 import numpy as np
@@ -45,9 +46,8 @@ class loss_fn(nn.Module):
     def forward(self, pred_tgt_ir, gt_tgt_ir):
 
         #unify the length of the irs
-        end = 8000
-        pred_tgt_ir = self._cut_or_zero_padding(pred_tgt_ir, end)
-        gt_tgt_ir = self._cut_or_zero_padding(gt_tgt_ir, end)
+        pred_tgt_ir = self._cut_or_zero_padding(pred_tgt_ir, self.sample_length)
+        gt_tgt_ir = self._cut_or_zero_padding(gt_tgt_ir, self.sample_length)
         # """waveform loss"""
         # wave_loss = F.mse_loss(pred_tgt_ir, gt_tgt_ir)
         """mrstft loss"""
@@ -81,15 +81,20 @@ class loss_fn(nn.Module):
         energy_loss_fn = nn.L1Loss()
         pred_energy_decay_curve = self._time_energy_decay_curve(pred_tgt_ir, self.sr, 1024, 256)
         tgt_energy_decay_curve = self._time_energy_decay_curve(gt_tgt_ir, self.sr, 1024, 256)
-        energy_loss = energy_loss_fn(pred_energy_decay_curve, tgt_energy_decay_curve)
+        time_edc_loss = energy_loss_fn(pred_energy_decay_curve, tgt_energy_decay_curve)
 
-        
+        """spectrogram Energy decay curveloss"""
         #xRIR edc loss
         pred_spect = convert_ir_to_spec(pred_tgt_ir).permute(0, 2, 3, 1)
         gt_spect = convert_ir_to_spec(gt_tgt_ir).permute(0, 2, 3, 1)
-        energy_decay_loss = self.compute_spect_energy_decay_losses(gts=torch.exp(gt_spect) - 1e-8, preds=torch.exp(pred_spect) - 1e-8)
+        spect_edc_loss = self.compute_spect_energy_decay_losses(gts=torch.exp(gt_spect) - 1e-8, preds=torch.exp(pred_spect) - 1e-8)
         
-        return energy_loss, mrstft_loss, energy_decay_loss
+        """envelope loss"""
+        pred_envelope = self.get_smoothed_envelope(pred_tgt_ir[:,0])
+        gt_envelope = self.get_smoothed_envelope(gt_tgt_ir[:,0])
+        env_length = int(0.4 *self.sr)
+        env_loss = nn.L1Loss()(pred_envelope[:, :env_length], gt_envelope[:, :env_length])
+        return mrstft_loss, time_edc_loss, spect_edc_loss, env_loss
 
     def _cut_or_zero_padding(self, ir, end):
         if ir.shape[2] > end:
@@ -214,4 +219,55 @@ class loss_fn(nn.Module):
 
         return loss
 
+    def get_smoothed_envelope(self, signal, window_size=512, normalized = True):
+        """
+        get the envelope of the signal and smooth it using moving average
+        
+        Args:
+        - signal: Tensor, shape of (batch, samples) or (samples,)
+        - window_size: size of the moving average window
+        """
+        if not signal.is_cuda:
+            signal = signal.to("cuda")
+        
+        if signal.dim() == 1:
+            signal = signal.unsqueeze(0)  # (1, samples)
 
+        # --- (Hilbert Transform) ---
+        N = signal.shape[-1]
+        Xf = torch.fft.fft(signal)
+        h = torch.zeros(N, device=signal.device)
+        
+        if N % 2 == 0:
+            h[0] = h[N // 2] = 1
+            h[1:N // 2] = 2
+        else:
+            h[0] = 1
+            h[1:(N + 1) // 2] = 2
+            
+        Xf = Xf * h
+        z = torch.fft.ifft(Xf)
+        envelope = torch.abs(z)  
+
+        # --- (Moving Average) ---
+        kernel = torch.ones((1, 1, window_size), device=signal.device) / window_size
+        pad_size = window_size // 2
+        envelope_padded = F.pad(envelope.unsqueeze(1), (pad_size, pad_size), mode='reflect')
+        smoothed_envelope = F.conv1d(envelope_padded, kernel)
+        
+        if normalized:
+            env_max_val = torch.max(smoothed_envelope, dim=-1, keepdim=True)[0]
+            smoothed_envelope = smoothed_envelope / (env_max_val + 1e-7)
+
+        return smoothed_envelope[:, 0, :N]
+
+if __name__ == "__main__":
+    loss_fn = loss_fn(sr=16000, duration=0.363, device="cuda")
+    gt_ir_path = '/data/250010171/code/EigeNet_aa/data/debug/S005_R070_hybrid_IR_16000hz.wav'
+    pred_ir_path = '/data/250010171/code/EigeNet_aa/data/debug/S005_R070_hybrid_IR_16000hz_recon.wav'
+    gt_ir = librosa.load(gt_ir_path, sr=16000)[0][:8000]
+    pred_ir = librosa.load(pred_ir_path, sr=16000)[0][:8000]
+    gt_ir = torch.from_numpy(gt_ir).unsqueeze(0).unsqueeze(0).cuda()
+    pred_ir = torch.from_numpy(pred_ir).unsqueeze(0).unsqueeze(0).cuda()
+    mrstft_loss, time_edc_loss, spect_edc_loss, env_loss = loss_fn(pred_ir, gt_ir)
+    print(mrstft_loss, time_edc_loss, spect_edc_loss, env_loss)

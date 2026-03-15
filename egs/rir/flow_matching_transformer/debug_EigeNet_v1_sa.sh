@@ -25,16 +25,16 @@ export HF_ENDPOINT=https://hf-mirror.com
 # export OMP_NUM_THREADS=18
 
 ######## Set Experiment Configuration ###########
-exp_config="$exp_dir/debug_EigeNet_v1.json"
-# 最基础模型
-exp_name="Eigenet_aa_v1"
+exp_config="$exp_dir/debug_EigeNet_v1_sa.json"
+# 最基础模型（全self attention）
+exp_name="v1_sa_debug"
 
 ######## Train Model ###########
 
 accelerate launch \
     --main_process_port 13566 \
     --mixed_precision="bf16" \
-    "${work_dir}"/train_v1.py \
+    "${work_dir}"/train_v1_sa.py \
     --config=$exp_config \
     --exp_name=$exp_name \
     --log_level debug \

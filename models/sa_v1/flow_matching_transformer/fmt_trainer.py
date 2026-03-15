@@ -24,9 +24,9 @@ import matplotlib.pyplot as plt
 
 from models.base.base_trainer import BaseTrainer
 from models.dataset.acousticrooms_dataset import AcousticRooms_Dataset, AcousticRooms_Collator
-from models.aa_v1.flow_matching_transformer.fmt_model import FlowMatchingTransformer
+from models.sa_v1.flow_matching_transformer.fmt_model import FlowMatchingTransformer
 from models.loss.waveform_loss import loss_fn as waveform_loss_fn
-from models.aa_v1.flow_matching_transformer.evaluator import Evaluator
+from models.sa_v1.flow_matching_transformer.evaluator import Evaluator
 from models.layers.utils import compute_metrics, plot_waveform
 
 
@@ -150,7 +150,7 @@ class FMTTrainer(BaseTrainer):
         # print(f"pred_tgt_ir: {pred_tgt_ir.shape}")
         # print("--------------------------------")
         # # exit()
-
+        
         mrstft_loss, time_edc_loss, spect_edc_loss, env_loss = self.waveform_loss_fn(pred_tgt_ir, gt_tgt_ir)
         main_loss = self.cfg.loss.mrstft_loss_weight * mrstft_loss
         auxiliary_loss = self.cfg.loss.time_edc_loss_weight * time_edc_loss \
@@ -164,6 +164,7 @@ class FMTTrainer(BaseTrainer):
         train_losses["time_edc_loss"] = time_edc_loss
         train_losses["spect_edc_loss"] = spect_edc_loss
         train_losses["env_loss"] = env_loss
+
 
         self.optimizer.zero_grad()
         self.accelerator.backward(total_loss)

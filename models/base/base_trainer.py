@@ -27,10 +27,6 @@ class BaseTrainer:
         self.cfg = cfg
         
         cfg.exp_name = args.exp_name
-        self.tracker =  SwanLabTracker(
-            cfg.tracker.run_name,
-            config=cfg.tracker.config.to_dict()
-        )
 
         self._init_accelerator()
         self.accelerator.wait_for_everyone()
@@ -316,13 +312,13 @@ class BaseTrainer:
         )
         from accelerate.utils import DistributedDataParallelKwargs, InitProcessGroupKwargs
         from datetime import timedelta
-        # init_kwargs = InitProcessGroupKwargs(timeout=timedelta(hours=12))
-        # self.accelerator = accelerate.Accelerator(
-        #     gradient_accumulation_steps=self.cfg.train.gradient_accumulation_step,
-        #     log_with=self.cfg.tracker,
-        #     project_config=project_config,
-        #     kwargs_handlers=[init_kwargs]
-        # )
+        init_kwargs = InitProcessGroupKwargs(timeout=timedelta(hours=12))
+        self.accelerator = accelerate.Accelerator(
+            gradient_accumulation_steps=self.cfg.train.gradient_accumulation_step,
+            log_with="tensorboard",
+            project_config=project_config,
+            kwargs_handlers=[init_kwargs]
+        )
         if self.accelerator.is_main_process:
             os.makedirs(project_config.project_dir, exist_ok=True)
             #os.makedirs(project_config.logging_dir, exist_ok=True)

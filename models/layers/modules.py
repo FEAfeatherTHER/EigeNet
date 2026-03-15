@@ -442,19 +442,44 @@ if is_package_available("flash_attn"):
     from flash_attn.bert_padding import pad_input, unpad_input
 
 
+
+
 class AttnProcessor:
     def __init__(
         self,
         pe_attn_head: int | None = None,  # number of attention head to apply rope, None for all
         attn_backend: str = "torch",  # "torch" or "flash_attn"
         attn_mask_enabled: bool = True,
+        return_attn_weight: bool = False,
     ):
         if attn_backend == "flash_attn":
             assert is_package_available("flash_attn"), "Please install flash-attn first."
 
         self.pe_attn_head = pe_attn_head
         self.attn_backend = attn_backend
+        self.return_attn_weight = return_attn_weight
         self.attn_mask_enabled = attn_mask_enabled
+
+    def get_attn_weight(self, query, key, value, attn_mask=None):
+        # SDPA 
+        L, S = query.size(-2), key.size(-2)
+        scale_factor = 1 / math.sqrt(query.size(-1))
+        
+        # 1. compute the attn score: (Q @ K.T) * scale
+        attn_bias = torch.zeros(L, S, dtype=query.dtype, device=query.device)
+        if attn_mask is not None:
+            attn_bias.masked_fill_(attn_mask == 0, float("-inf"))
+
+        # Softmax 
+        attn_weight = torch.softmax(
+            (query @ key.transpose(-2, -1) * scale_factor) + attn_bias, 
+            dim=-1
+        )
+        
+        # 2. export the attn weight
+        self.latest_attn_weights = attn_weight 
+
+        return attn_weight
 
     def __call__(
         self,
@@ -541,8 +566,10 @@ class AttnProcessor:
         if mask is not None:
             mask = mask.unsqueeze(-1)
             x = x.masked_fill(~mask, 0.0)
-
-        return x
+        if self.return_attn_weight:
+            return x, self.get_attn_weight(query, key, value, attn_mask).detach()
+        else:
+            return x
 
 
 # Joint Attention processor for MM-DiT

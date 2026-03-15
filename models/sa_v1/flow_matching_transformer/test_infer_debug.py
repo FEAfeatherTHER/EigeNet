@@ -20,8 +20,8 @@ from einops import rearrange
 from utils.util import load_config
 from models.dataset.acousticrooms_dataset import frame2mask, _load_and_cut_audio
 from models.dataset.utils import get_3d_point_camera_coord, convert_equirect_to_camera_coord
-from models.aa_v1.flow_matching_transformer.evaluator import Evaluator
-from models.aa_v1.flow_matching_transformer.test_infer_pipeline import InferencePipeline as RIR_InferencePipeline
+from models.sa_v1.flow_matching_transformer.evaluator import Evaluator
+from models.sa_v1.flow_matching_transformer.test_infer_pipeline import InferencePipeline as RIR_InferencePipeline
 from models.layers.utils import compute_metrics, plot_waveform
 
 
@@ -306,8 +306,8 @@ def main_debug(args):
         log.to_csv(metric_path, index = False)
         
 if __name__ == "__main__":
-    fmt_cfg = os.path.join(src, f"egs/rir/flow_matching_transformer/debug_EigeNet_v1_aa.json")
-    fmt_ckpt = "/data/250010171/ckpts/EigeNet/discriminant/v1_aa_debug/checkpoint_backup/epoch-0008_step-0030000_loss-2.652895"
+    fmt_cfg = os.path.join(src, f"egs/rir/flow_matching_transformer/debug_EigeNet_v1_sa.json")
+    fmt_ckpt = "/data/250010171/ckpts/EigeNet/discriminant/v1_sa_debug/checkpoint_backup/epoch-0010_step-0015000_loss-2.133669"
     
     parser = argparse.ArgumentParser(description="Inference Script")
     args = parser.parse_args()

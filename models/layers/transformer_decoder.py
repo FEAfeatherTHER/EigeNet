@@ -24,14 +24,17 @@ class Transformer_Block(nn.Module):
         pe_attn_head=None,
         attn_backend="torch",  # "torch" or "flash_attn"
         attn_mask_enabled=True,
+        return_attn=False,
     ):
         super().__init__()
         self.attn_norm = RMSNorm(dim, eps=1e-6)
+        self.return_attn = return_attn
         self.attn = Attention(
             processor=AttnProcessor(
                 pe_attn_head=pe_attn_head,
                 attn_backend=attn_backend,
                 attn_mask_enabled=attn_mask_enabled,
+                return_attn_weight=self.return_attn,
             ),
             dim=dim,
             heads=heads,
@@ -43,11 +46,18 @@ class Transformer_Block(nn.Module):
         self.ff = FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh")
 
     def forward(self, x, mask=None, rope=None):
-        x = x + self.attn(self.attn_norm(x), mask=mask, rope=rope)
+        if self.return_attn:
+            attn_out, attn_weight = self.attn(self.attn_norm(x), mask=mask, rope=rope)
+        else:
+            attn_out = self.attn(self.attn_norm(x), mask=mask, rope=rope)
+        x = x + attn_out
         x = x + self.ff(self.ff_norm(x))
-        return x
+        if self.return_attn:
+            return x, attn_weight
+        else:
+            return x
 
-class Transformer_Encoder(nn.Module):
+class Transformer_Decoder(nn.Module):
     def __init__(
         self,
         *,
@@ -64,11 +74,13 @@ class Transformer_Encoder(nn.Module):
         attn_backend="torch",  # "torch" | "flash_attn"
         attn_mask_enabled=False,
         checkpoint_activations=False,
+        return_attn= False,
     ):
         super().__init__()
         self.rotary_embed = RotaryEmbedding(dim_head)
         self.dim = dim
         self.depth = depth
+        self.return_attn = return_attn
         self.transformer_blocks = nn.ModuleList(
             [
                 Transformer_Block(
@@ -81,11 +93,11 @@ class Transformer_Encoder(nn.Module):
                     pe_attn_head=pe_attn_head,
                     attn_backend=attn_backend,
                     attn_mask_enabled=attn_mask_enabled,
+                    return_attn = self.return_attn,
                 )
                 for _ in range(depth)
             ]
         )
-        #self.proj_in = nn.Linear(latent_dim, dim)
         #self.proj_out = nn.Linear(dim, latent_dim)
         self.checkpoint_activations = checkpoint_activations
         
@@ -99,16 +111,14 @@ class Transformer_Encoder(nn.Module):
                 x = torch.utils.checkpoint.checkpoint(self.ckpt_wrapper(block), x, mask, rope, use_reentrant=False)
             else:
                 x = block(x, mask=mask, rope=rope)
-        #x = self.norm_out(x)
         #x = self.proj_out(x)
         return x
 
-class AA_Transformer_Encoder(nn.Module):
+class AA_Transformer_Decoder(nn.Module):
     def __init__(
         self,
         *,
         dim,
-        out_dim,
         depth=4,
         aa_order_list = ['f', 'g', 'f', 'g'],
         heads=4,
@@ -121,6 +131,7 @@ class AA_Transformer_Encoder(nn.Module):
         attn_backend="torch",  # "torch" | "flash_attn"
         attn_mask_enabled=False,
         checkpoint_activations=False,
+        return_attn= False,
     ):
         super().__init__()
         assert len(aa_order_list) == depth, "The length of aa_order_list must be equal to the depth of the model"
@@ -129,6 +140,7 @@ class AA_Transformer_Encoder(nn.Module):
         self.rotary_embed = RotaryEmbedding(dim_head)
         self.dim = dim
         self.depth = depth
+        self.return_attn = return_attn
 
         self.transformer_blocks = nn.ModuleList(
             [
@@ -142,11 +154,11 @@ class AA_Transformer_Encoder(nn.Module):
                     pe_attn_head=pe_attn_head,
                     attn_backend=attn_backend,
                     attn_mask_enabled=attn_mask_enabled,
+                    return_attn = self.return_attn,
                 )
                 for _ in range(depth)
             ]
         )
-        self.proj_out = nn.Linear(dim * 2, out_dim)
         self.checkpoint_activations = checkpoint_activations
 
     def _process_frame_attention(self, x, B, S, P, C, idx):
@@ -160,8 +172,10 @@ class AA_Transformer_Encoder(nn.Module):
         intermediates = []
         seq_len = x.shape[1]
         rope = self.rotary_embed.forward_from_seq_len(seq_len)
-
-        x = self.transformer_blocks[idx](x, rope=rope)
+        if self.return_attn:
+            x, attn_weight = self.transformer_blocks[idx](x, rope=rope)
+        else:
+            x = self.transformer_blocks[idx](x, rope=rope)
         idx += 1
         intermediates.append(x.view(B, S, P, C))
 
@@ -178,8 +192,10 @@ class AA_Transformer_Encoder(nn.Module):
         intermediates = []
         seq_len = x.shape[1]
         rope = self.rotary_embed.forward_from_seq_len(seq_len)
-
-        x = self.transformer_blocks[idx](x, rope=rope)
+        if self.return_attn:
+            x, attn_weight = self.transformer_blocks[idx](x, rope=rope)
+        else:
+            x = self.transformer_blocks[idx](x, rope=rope)
         idx += 1
         intermediates.append(x.view(B, S, P, C))
 
@@ -198,6 +214,4 @@ class AA_Transformer_Encoder(nn.Module):
         last_frame_x = frame_intermediates[-1] # (B, S, P, C)
         last_global_x = global_intermediates[-1] # (B, S, P, C)
         x = torch.cat((last_frame_x, last_global_x), dim=-1) # (B, S, P, C*2)
-        tgt_x = x[:, -1, 2:]
-        tgt_x = self.proj_out(tgt_x)
-        return tgt_x
+        return x
