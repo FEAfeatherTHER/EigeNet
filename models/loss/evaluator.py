@@ -238,7 +238,9 @@ class Evaluator:
             i_decay = np.min(np.where(- decay_db - energy_db > 0)[0])
         except ValueError:
             return np.inf
-        est_edt = i_decay / fs
+        t_decay = i_decay / fs
+        decay_time = t_decay
+        est_edt = (60 / decay_db) * decay_time
         return est_edt
 
     def measure_rt60(self, h, fs=16000, decay_db=20, plot=False, rt60_tgt=None):

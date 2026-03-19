@@ -47,29 +47,35 @@ class FlowMatchingTransformer(nn.Module):
             if hasattr(cfg, 'depth_patch_size') else (16, 32))
         self.ap_patch_size = tuple(cfg.ap_patch_size 
             if hasattr(cfg, 'ap_patch_size') else (2, 4))
-        self.dep_resol = tuple(cfg.dep_resol 
-            if hasattr(cfg, 'image_size') else (256, 512))
+        self.depth_resol = tuple(cfg.depth_resol 
+            if hasattr(cfg, 'depth_resol') else (256, 512))
         self.ap_resol = tuple(cfg.ap_resol 
             if hasattr(cfg, 'ap_resol') else (32, 64))
-
+        
         self.depth_dim = cfg.depth_dim
         self.depth_channel = cfg.depth_channel
-        self.depth_encoder = ResNet18(in_channels=self.depth_channel)
-        
+        self.depth_patchify = PatchEmbed(img_size=self.depth_resol, 
+            patch_size=self.depth_patch_size, 
+            in_chans=self.depth_channel, 
+            embed_dim=self.depth_dim)
         if self.ap:
+
             self.ap_dim = cfg.ap_dim
             self.ap_channel = cfg.ap_channel
             self.ap_tensor = nn.Parameter(torch.ones(1, self.ap_channel, self.ap_resol[0], self.ap_resol[1]), requires_grad=True)
-            self.ap_encoder = ResNet18(in_channels=self.ap_channel)
+            self.ap_patchify = PatchEmbed(img_size=self.ap_resol, 
+                patch_size=self.ap_patch_size, 
+                in_chans=self.ap_channel, 
+                embed_dim=self.ap_dim)
         else:
             self.depth_in_proj = nn.Linear(self.depth_dim, self.hidden_size)
-        
+
         self.aa_order_list = self.cfg.av_transformer.arch.aa_order_list
         self.aa_depth = self.cfg.av_transformer.arch.depth
         assert self.aa_depth == len(self.aa_order_list), "The depth is not equal to the length of aa_order_list"
-        
+
         self.av_transformer = AA_Transformer_Decoder(**cfg.av_transformer.arch)
-        
+
         self.loc_embedding = nn.Sequential(SinusPositionEmbedding(dim=pre_dim), 
                 nn.Linear(3 *pre_dim, self.hidden_size))
 
@@ -78,8 +84,8 @@ class FlowMatchingTransformer(nn.Module):
         self.register_buffer("ir_time_interval", ir_time_interval)
         self.ir_time_interval_embedding = nn.Sequential(SinusPositionEmbedding(dim=pre_dim), 
             nn.Linear(pre_dim, self.hidden_size))
-        self.ir_decoder  = nn.Sequential(nn.Linear(2*self.hidden_size, self.ir_decoder_hs),
-            Transformer_Decoder(**cfg.ir_decoder.arch),
+        self.ir_decoder = nn.Sequential(nn.Linear(2*self.hidden_size, self.ir_decoder_hs),
+            Transformer_Decoder(**cfg.ir_decoder.arch), 
             nn.Linear(self.ir_decoder_hs, self.hidden_size))
 
         if self.env:
@@ -91,7 +97,7 @@ class FlowMatchingTransformer(nn.Module):
                 nn.Linear(self.env_decoder_hs, self.hidden_size))
             self.loc_proj = nn.Linear(2*self.hidden_size, self.env_decoder_hs)
             self.room_proj = nn.Linear(self.hidden_size, self.env_decoder_hs)
-        
+
         self.reset_parameters()
        
     def reset_parameters(self):
@@ -148,16 +154,6 @@ class FlowMatchingTransformer(nn.Module):
         loc_tokens = self.loc_embedding[1](loc_tokens).unsqueeze(1) #(B*N, 1, dim)
         loc_tokens = loc_tokens.reshape(bsz, irs_num, 1, loc_tokens.shape[-1]) #(B, N, 1, dim)
         return loc_tokens
-    
-    def get_depth_tokens(self, depth_map):
-        """
-        Args:
-           depth_map: (B, 3, 256, 512)
-        Returns:
-           depth_tokens: (B, 1, 512)
-        """
-        depth_tokens = self.depth_encoder(depth_map)#(b, 512)
-        return depth_tokens.unsqueeze(1) #(b, 1, 512)
 
     def get_time_tokens(self, time_interval, type = "ir"):
         """
@@ -173,7 +169,7 @@ class FlowMatchingTransformer(nn.Module):
         else:
             raise ValueError(f"Invalid time type: {type}")
         return time_ebd
-
+    
     def prepare_tokens(self, depth_map, loc, irs_num, bsz):
         """
         Args:
@@ -186,16 +182,16 @@ class FlowMatchingTransformer(nn.Module):
            room_tokens: (B, 1, dim)
            time_tokens: (B, 1, T, dim)
         """
+        bsz = depth_map.shape[0]
         ir_time_tokens = self.get_time_tokens(self.ir_time_interval, type = "ir") #(T, dim)
         ir_time_tokens = ir_time_tokens.unsqueeze(0).unsqueeze(0).repeat(bsz, 1, 1, 1) #(B, 1, T, dim)
         loc_tokens = self.get_loc_tokens(loc) #(B, N, 1, dim)
-        depth_tokens = self.get_depth_tokens(depth_map) #(B, 1, depth_dim)
-
+        depth_tokens  = self.depth_patchify(depth_map) #(B, ph*pw, depth_dim)
         if not self.ap:
-            depth_tokens = self.depth_in_proj(depth_tokens) #(B, 1, dim)
+            depth_tokens = self.depth_in_proj(depth_tokens) #(B, ph*pw, dim)
             room_tokens = depth_tokens
         else:
-            ap_tokens = self.ap_encoder(self.ap_tensor).repeat(bsz, 1, 1) #(B, ph*pw, ap_dim)
+            ap_tokens = self.ap_patchify(self.ap_tensor).repeat(bsz, 1, 1) #(B, ph*pw, ap_dim)
             room_tokens = torch.cat([depth_tokens, ap_tokens], dim = -1) #(B, ph*pw, dim)
         return loc_tokens, room_tokens, ir_time_tokens
 
@@ -204,13 +200,13 @@ class FlowMatchingTransformer(nn.Module):
         Args:
            ref_view_tokens: (B, N-1, t+1, dim)
            tgt_view_tokens: (B, 1, t+1, dim)
-           room_tokens: (B, 1, dim)
+           room_tokens: (B, ph*pw, dim)
         Returns:
            ir_tokens: (B, N, t, dim*2)
-           room_tokens: (B, 1, dim)
+           room_tokens: (B, ph*pw, dim)
            loc_tokens: (B, N, 1, dim*2)
         """
-        all_view_tokens = torch.cat([ref_view_tokens, tgt_view_tokens], dim = 1)#(B, N, t+2, dim)
+        all_view_tokens = torch.cat([ref_view_tokens, tgt_view_tokens], dim = 1)#(B, N, t+1, dim)
         patch_num = room_tokens.shape[1]
         B, S, P, C = all_view_tokens.shape
         idx = 0
@@ -228,14 +224,26 @@ class FlowMatchingTransformer(nn.Module):
                 all_view_tokens = rearrange(all_view_tokens, "b (s p) c -> b s p c", s = S)
             else:
                 raise ValueError(f"Invalid attention type: {attn_type}")
-        last_frame_all_view_tokens = frame_intermediates[-1] # (B, S, P, C)
-        last_global_all_view_tokens = global_intermediates[-1] # (B, S, P, C)
+        last_frame_all_view_tokens = frame_intermediates[-1]
+        last_global_all_view_tokens = global_intermediates[-1]
         last_all_view_tokens = torch.cat([last_frame_all_view_tokens, last_global_all_view_tokens], dim = -1)
         last_all_view_ir_tokens = last_all_view_tokens[..., 1:, :]
         last_all_view_loc_tokens = last_all_view_tokens[..., 0:1, :]
         del last_all_view_tokens, last_frame_all_view_tokens, last_global_all_view_tokens, global_intermediates, frame_intermediates
         return last_all_view_ir_tokens, room_tokens, last_all_view_loc_tokens
 
+    def env_decode(self, room_tokens, loc_tokens):
+        loc_tokens = self.loc_proj(loc_tokens)
+        room_tokens = self.room_proj(room_tokens)
+        bsz = room_tokens.shape[0]
+        env_tokens = self.get_time_tokens(self.env_time_interval, type = "env")#(T, dim)
+        env_token_num = env_tokens.shape[0]
+        env_tokens = env_tokens.unsqueeze(0).repeat(bsz, 1, 1)#(B, T, dim)
+        x = torch.cat([room_tokens, loc_tokens, env_tokens], dim = 1)#(B, ph*pw+T+1, dim)
+        x = self.env_decoder(x)#(B, ph*pw+T+1, dim)
+        env_tokens = x[:, -env_token_num:, :]#(B, T, dim)
+        return env_tokens
+        
 
     def forward(self, ir_z, cc_depth_map, cc_src_loc):
         """
@@ -243,32 +251,31 @@ class FlowMatchingTransformer(nn.Module):
            ir_z: (B, N, t, 1024)
            cc_depth_map: (B, 3, 256, 512)
            cc_src_loc: (B, N, 3)
-        Return:
-           tgt_ir_tokens: (B, t, dim)
         """
         bsz, irs_num = ir_z.shape[0], ir_z.shape[1]
         loc_tokens, room_tokens, ir_time_tokens = self.prepare_tokens(cc_depth_map, cc_src_loc, irs_num, bsz)
         # print(f"检查pre_embedding输出")
-        # print(f"loc_tokens: {loc_tokens.shape}") #(B, N, 1, dim), 
-        # print(f"room_tokens: {room_tokens.shape}") #(B, 1, dim), 
+        # print(f"loc_tokens: {loc_tokens.shape}") #(B, N, 1, dim)
+        # print(f"room_tokens: {room_tokens.shape}") #(B, ph*pw, dim)
         # print(f"ir_time_tokens: {ir_time_tokens.shape}") #(B, 1, T, dim)
         # print("--------------------------------")
         # #exit()
         ref_ir_tokens = ir_z[:,:-1]#(B, N-1, t, 1024)
-        tgt_view_tokens = torch.cat([loc_tokens[:,-1:], ir_time_tokens], dim = -2)#(B, 1, t+1, dim)
-        ref_view_tokens = torch.cat([loc_tokens[:,:-1], ref_ir_tokens], dim = -2)#(B, N-1, t+1, dim)
+        tgt_view_tokens = torch.cat([loc_tokens[:,-1:], ir_time_tokens], dim = -2)#(B, 1, 1+t, dim)
+        ref_view_tokens = torch.cat([loc_tokens[:,:-1], ref_ir_tokens], dim = -2)#(B, N-1, 1+t, dim)
 
-        ir_tokens, room_tokens, loc_tokens = self.aggregator(ref_view_tokens, tgt_view_tokens, room_tokens)#(B, N, t+1, dim)
+        ir_tokens, room_tokens, loc_tokens = self.aggregator(ref_view_tokens, tgt_view_tokens, room_tokens)
         # print(f"检查aggregator输出")
         # print(f"ir_tokens: {ir_tokens.shape}") #(B, N, t, dim*2)
-        # print(f"room_tokens: {room_tokens.shape}") #(B, 1, dim)
+        # print(f"room_tokens: {room_tokens.shape}") #(B, ph*pw, dim)
         # print(f"loc_tokens: {loc_tokens.shape}") #(B, N, 1, dim*2)
         # print("--------------------------------")
         # #exit()
+        
         tgt_loc_tokens = loc_tokens[:, -1]#(B, 1, dim)
-        tgt_ir_tokens = ir_tokens[:, -1]
+        tgt_ir_tokens = ir_tokens[:, -1]#(B, t, dim)
         tgt_ir_tokens = self.ir_decoder(tgt_ir_tokens)#(B, t, dim)
-        # print(f"检查ir_decoder输出")
+        # print(f"tgt_loc_tokens: {tgt_loc_tokens.shape}") #(B, 1, dim)
         # print(f"tgt_ir_tokens: {tgt_ir_tokens.shape}") #(B, t, dim)
         # print("--------------------------------")
         # exit()

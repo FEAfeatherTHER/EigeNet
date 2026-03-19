@@ -41,7 +41,7 @@ import torch
 # from models.tts.flow_se.fmt_trainer import FMTTrainer
 # from models.tts.flow_se.post_training.dpo_trainer import DPOFMTTrainer
 
-from models.sa_v1.flow_matching_transformer.fmt_trainer import FMTTrainer as MIDI2AudioFMTTrainer
+from models.aa_v2.flow_matching_transformer.fmt_trainer import FMTTrainer as MIDI2AudioFMTTrainer
 
 from utils.util import load_config
 

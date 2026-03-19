@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 
 from models.base.base_trainer import BaseTrainer
 from models.dataset.acousticrooms_dataset import AcousticRooms_Dataset, AcousticRooms_Collator
-from models.aa_v1.flow_matching_transformer.fmt_model import FlowMatchingTransformer
+from models.aa_v2.flow_matching_transformer.fmt_model import FlowMatchingTransformer
 from models.loss.waveform_loss import loss_fn as waveform_loss_fn
 from models.loss.evaluator import Evaluator
 from models.layers.utils import compute_metrics, plot_waveform
@@ -69,7 +69,7 @@ class FMTTrainer(BaseTrainer):
         )
         project_config = ProjectConfiguration(
             project_dir=self.exp_dir,
-            logging_dir=os.path.join(self.exp_dir, "log"),
+            #logging_dir=os.path.join(self.exp_dir, "log"),
         )
         from accelerate.utils import DistributedDataParallelKwargs, InitProcessGroupKwargs
         ddp_kwargs = [InitProcessGroupKwargs(timeout=timedelta(seconds=3*3600)), DistributedDataParallelKwargs(find_unused_parameters=True)]
@@ -141,7 +141,6 @@ class FMTTrainer(BaseTrainer):
         
         pred_tgt_env = None
         all_ir_z = self.encode_audio_to_z(all_ir) #(B, N, t, 1024)
-
         if not self.cfg.model.flow_matching_transformer.env:
             pred_tgt_ir_z = self.model(all_ir_z, cc_depth_map, all_cc_src_loc)
         else:
@@ -151,13 +150,12 @@ class FMTTrainer(BaseTrainer):
         if torch.isnan(pred_tgt_ir).any() or torch.isinf(pred_tgt_ir).any():
             print(f"pred_tgt_ir is nan or inf")
             exit()
-        
         # print(f"*"*20)
         # print(f"检查输出")
-        # print(f"pred_tgt_z: {pred_tgt_z.shape}")
+        # print(f"pred_tgt_env: {pred_tgt_env.shape}")
         # print(f"pred_tgt_ir: {pred_tgt_ir.shape}")
         # print("--------------------------------")
-        # # exit()
+        #exit()
 
         mrstft_loss, time_edc_loss, spect_edc_loss, env_loss = self.waveform_loss_fn(pred_tgt_ir, gt_tgt_ir, pred_tgt_env)
         main_loss = self.cfg.loss.mrstft_loss_weight * mrstft_loss
@@ -172,7 +170,17 @@ class FMTTrainer(BaseTrainer):
         train_losses["time_edc_loss"] = time_edc_loss
         train_losses["spect_edc_loss"] = spect_edc_loss
         train_losses["env_loss"] = env_loss
-
+        
+        # print(f"*"*20)
+        # print(f"检查loss")
+        # print(f"batch_total_loss: {batch_total_loss.item()}")
+        # print(f"mrstft_loss: {mrstft_loss.item()}")
+        # print(f"time_edc_loss: {time_edc_loss.item()}")
+        # print(f"spect_edc_loss: {spect_edc_loss.item()}")
+        # print(f"env_loss: {env_loss.item()}")
+        # print("--------------------------------")
+        # exit()
+        
         self.optimizer.zero_grad()
         self.accelerator.backward(total_loss)
         if self.accelerator.sync_gradients:
@@ -311,13 +319,11 @@ class FMTTrainer(BaseTrainer):
         cc_depth_map = batch["cc_depth_map"].to(self.accelerator.device) # [B, 256, 512, 3]
         
         all_ir_z = self.encode_audio_to_z(all_ir) #(B, N, t, 1024)
-
         if not self.cfg.model.flow_matching_transformer.env:
             pred_tgt_ir_z = self.model(all_ir_z, cc_depth_map, all_cc_src_loc)
             
         else:
             pred_tgt_ir_z, pred_tgt_env_z = self.model(all_ir_z, cc_depth_map, all_cc_src_loc)
-        
         pred_tgt_ir = self.decode_z_to_audio(pred_tgt_ir_z.transpose(-1, -2))
         valid_length = int(self.cfg.valid.duration * self.sample_rate)
         pred_tgt_ir = pred_tgt_ir[...,:valid_length].cpu().numpy()

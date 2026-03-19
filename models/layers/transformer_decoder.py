@@ -110,7 +110,10 @@ class Transformer_Decoder(nn.Module):
             if self.checkpoint_activations:
                 x = torch.utils.checkpoint.checkpoint(self.ckpt_wrapper(block), x, mask, rope, use_reentrant=False)
             else:
-                x = block(x, mask=mask, rope=rope)
+                if self.return_attn:
+                    x, attn_weight = block(x, mask=mask, rope=rope)
+                else:
+                    x = block(x, mask=mask, rope=rope)
         #x = self.proj_out(x)
         return x
 
@@ -167,7 +170,7 @@ class AA_Transformer_Decoder(nn.Module):
         """
         # If needed, reshape tokens:
         if x.shape != (B * S, P, C):
-            x = x.view(B, S, P, C).view(B * S, P, C)
+            x = x.contiguous().view(B, S, P, C).view(B * S, P, C)
 
         intermediates = []
         seq_len = x.shape[1]
@@ -177,17 +180,21 @@ class AA_Transformer_Decoder(nn.Module):
         else:
             x = self.transformer_blocks[idx](x, rope=rope)
         idx += 1
-        intermediates.append(x.view(B, S, P, C))
+        intermediates.append(rearrange(x, "(b s) p c -> b s p c", s = S))
 
         return x, idx, intermediates
     
-    def _process_global_attention(self, x, B, S, P, C, idx):
+    def _process_global_attention(self, x, B, S, P, C, idx, gP = 0):
         """
         Process glbal attention blocks.
         """
         # If needed, reshape tokens:
-        if x.shape != (B, S*P, C):
-            x = x.view(B, S, P, C).view(B, S*P, C)
+        if gP == 0:
+            if x.shape != (B, S*P, C):
+                x = x.contiguous().view(B, S, P, C).view(B, S*P, C)
+        else:
+            if x.shape != (B, S*P + gP, C):
+                raise ValueError(f"The shape of x is not correct: {x.shape}")
 
         intermediates = []
         seq_len = x.shape[1]
@@ -197,7 +204,7 @@ class AA_Transformer_Decoder(nn.Module):
         else:
             x = self.transformer_blocks[idx](x, rope=rope)
         idx += 1
-        intermediates.append(x.view(B, S, P, C))
+        intermediates.append(rearrange(x[:, gP:], "b (s p) c -> b s p c", s = S))
 
         return x, idx, intermediates 
 

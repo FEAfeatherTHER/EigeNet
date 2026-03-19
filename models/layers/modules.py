@@ -857,13 +857,15 @@ class SoftEmbedding(nn.Module):
 
 
 class ResNet18(nn.Module):
-    def __init__(self):
+    def __init__(self,
+    in_channels: int = 3,
+    ):
         """
         ResNet-18.
         """
         super().__init__()
 
-        self._n_input = 3
+        self._n_input = in_channels
 
         self.cnn = torchvision.models.resnet18(pretrained=False)
         self.cnn.fc_backup = self.cnn.fc

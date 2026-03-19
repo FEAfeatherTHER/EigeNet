@@ -20,8 +20,54 @@
             "path": "/data/250010171/ckpts/pretrained/dac/weights_16k.pth"
         },
         "flow_matching_transformer": {
+            "ap":false,
+            "env":false,
             "hidden_size": 1024,
-            "visual_transformer": {
+            "ir_decoder_hs": 1024,
+            "env_decoder_hs": 256,
+            "pre_dim": 512,
+            "depth_resol": [256, 512],
+            "ap_resol": [32, 64],
+            "depth_patch_size": [16, 32],
+            "ap_patch_size": [2, 4],
+            "depth_dim": 512,
+            "depth_channel": 3,
+            "ap_dim": 512,
+            "ap_channel": 6,
+            "av_transformer": {
+                "arch": {
+                    "dim": 1024,
+                    "depth": 12,
+                    "aa_order_list" : ["f", "g", "f", "g", "f", "g", "f", "g", "f", "g", "f", "g"],
+                    "heads": 16,
+                    "dim_head": 64,
+                    "dropout": 0.1,
+                    "ff_mult": 2,
+                    "qk_norm": "rms_norm",
+                    "pe_attn_head": null,
+                    "attn_backend": "torch",
+                    "attn_mask_enabled": true,
+                    "checkpoint_activations": false,
+                    "return_attn": false, //true when visualizing the attn map
+                    }
+                },
+            // "env_decoder": {
+            //     "arch": {
+            //         "dim": 128,
+            //         "depth": 4,
+            //         "heads": 4,
+            //         "dim_head": 32,
+            //         "dropout": 0.1,
+            //         "ff_mult": 2,
+            //         "qk_norm": "rms_norm",
+            //         "pe_attn_head": null,
+            //         "attn_backend": "torch",
+            //         "attn_mask_enabled": true,
+            //         "checkpoint_activations": false,
+            //         "return_attn": false, //true when visualizing the attn map
+            //         }
+            //     },
+            "ir_decoder": {
                 "arch": {
                     "dim": 1024,
                     "depth": 4,
@@ -34,34 +80,27 @@
                     "attn_backend": "torch",
                     "attn_mask_enabled": true,
                     "checkpoint_activations": false,
+                    "return_attn": false, //true when visualizing the attn map
                     }
                 },
-            "av_transformer": {
-                "arch": {
-                    "dim": 1024,
-                    "depth": 8,
-                    "heads": 16,
-                    "dim_head": 64,
-                    "dropout": 0.1,
-                    "ff_mult": 2,
-                    "qk_norm": "rms_norm",
-                    "pe_attn_head": null,
-                    "attn_backend": "torch",
-                    "attn_mask_enabled": true,
-                    "checkpoint_activations": false,
-                    }
-                }
             }
         },
     "loss":{
         "mrstft_loss_weight": 1.0,
         "time_edc_loss_weight": 1.0,
         "spect_edc_loss_weight": 0.0,
-        "env_loss_weight": 10.0,
+        "env_loss_weight": 0.0,
+        "env":{
+            "duration": 0.4,
+            "smooth": "gaussian", // mv, gaussian, null
+            "window": 64,
+            "normalized": false,
+            "alpha": 0.5,
+        }
     },
     "log_dir": "/data/250010171/ckpts/EigeNet/discriminant",
     "train": {
-        "max_epoch": 20,
+        "max_epoch": 15,
         "use_dynamic_batchsize": false,
         // "max_tokens": 6000, // Ints (3.8B): 3500, Qwen2.5 (0.5B): 7500
         "max_tokens": 5000, // Ints (3.8B): 3500, Qwen2.5 (0.5B): 7500
@@ -76,11 +115,11 @@
         "random_seed": 114,
         "batch_size": 25, 
         "epochs": 5000,
-        "max_steps": 1000000,
+        "max_steps": 15000,
         "total_training_steps": 800000,
         "save_summary_steps": 500,
         "save_checkpoints_steps": 500,
-        "save_checkpoints_backup_steps": 5000,
+        "save_checkpoints_backup_steps": 1000,
         "keep_checkpoint_max": 100,
         "gradient_accumulation_step": 1,
         "resume_skip_steps": true,
@@ -102,28 +141,19 @@
     "valid":{
         "duration": 0.363,
         "batch_size": 10,
-        "visualize_interval":100,
+        "visualize_interval":0, //0: no visualization
     },
     "tracker":{
+        "dummy_run":true, //set true when debugging
         "type":"swanlab",
-        "project_name":"EigeNet",
+        "project_name":"EigeNet_ablation",
         "config":{
             "loss_weight":{
                 "mrstft_loss_weight": 1.0,
                 "time_edc_loss_weight": 1.0,
                 "spect_edc_loss_weight": 0.0,
-                "env_loss_weight": 10.0,
+                "env_loss_weight": 0.0,
             },
-            "visual_transformer": {
-                "dim": 1024,
-                "depth": 4,
-                "heads": 16,
-            },
-            "av_transformer": {
-                "dim": 1024,
-                "depth": 8,
-                "heads": 16,
-            }
         }
     }
 }

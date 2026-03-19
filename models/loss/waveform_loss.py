@@ -35,21 +35,74 @@ def convert_ir_to_spec(ir):
         ).permute(0, 2, 1).unsqueeze(0))
     return torch.vstack(tgt_spec)
 
+import torch
+import torch.nn as nn
+
+class Envelope_Loss(nn.Module):
+    def __init__(self, alpha=0.5, eps=1e-6):
+        """
+        pearson correlation + magnitude similarity
+        :param alpha: weight coefficient. 
+        :param eps:
+        """
+        super(Envelope_Loss, self).__init__()
+        self.alpha = alpha
+        self.eps = eps
+
+    def forward(self, pred, target):
+
+        # --- Pearson Correlation Loss ---
+        # centering
+        pred_mean = torch.mean(pred, dim=1, keepdim=True)
+        target_mean = torch.mean(target, dim=1, keepdim=True)
+        pred_centered = pred - pred_mean
+        target_centered = target - target_mean
+
+        # cosine similarity
+        num = torch.sum(pred_centered * target_centered, dim=1)
+        denom = torch.sqrt(torch.sum(pred_centered**2, dim=1) * torch.sum(target_centered**2, dim=1) + self.eps)
+        pearson_corr = num / denom
+        loss_trend = torch.mean(1 - pearson_corr)
+
+        # --- Log-MSE Loss ---
+        # in log space, handle magnitude difference
+        log_pred = torch.log(pred + self.eps)
+        log_target = torch.log(target + self.eps)
+        loss_magnitude = torch.mean((log_pred - log_target) ** 2)
+        
+        # --- weighted loss ---
+        total_loss = self.alpha * loss_trend + (1 - self.alpha) * loss_magnitude
+        return total_loss
+
+
 class loss_fn(nn.Module):
-    def __init__(self, sr, duration, device):
+    def __init__(self, sr, 
+        duration, 
+        device, 
+        env_duration = 0.4, 
+        smooth = "gaussian", 
+        env_window = 512, 
+        env_normalized = False,
+        env_loss_alpha = 0.5,
+        ):
         super(loss_fn, self).__init__()
         self.sr = sr
         self.duration = duration
         self.sample_length = int(duration * sr)
         self.device = device
+        self.smooth = smooth
+        self.env_duration = env_duration
+        self.env_window = env_window
+        self.env_normalized = env_normalized
+        self.env_loss_alpha = env_loss_alpha
+        self.env_loss = Envelope_Loss(env_loss_alpha)
 
-    def forward(self, pred_tgt_ir, gt_tgt_ir):
-
+    def forward(self, pred_ir, tgt_ir, pred_env = None):
         #unify the length of the irs
-        pred_tgt_ir = self._cut_or_zero_padding(pred_tgt_ir, self.sample_length)
-        gt_tgt_ir = self._cut_or_zero_padding(gt_tgt_ir, self.sample_length)
+        pred_ir = self._cut_or_zero_padding(pred_ir, self.sample_length)
+        tgt_ir = self._cut_or_zero_padding(tgt_ir, self.sample_length)
         # """waveform loss"""
-        # wave_loss = F.mse_loss(pred_tgt_ir, gt_tgt_ir)
+        # wave_loss = F.mse_loss(pred_ir, tgt_ir)
         """mrstft loss"""
         #hi_q_temporal
         mrstft_high_q_fn = auraloss.freq.MultiResolutionSTFTLoss(
@@ -73,27 +126,32 @@ class loss_fn(nn.Module):
                 perceptual_weighting=True,
                 device=self.device,
             )
-        mrstft_loss = 1*mrstft_high_q_fn(pred_tgt_ir, gt_tgt_ir)
-        + 0*mrstft_low_q_fn(pred_tgt_ir, gt_tgt_ir)
+        mrstft_loss = 1*mrstft_high_q_fn(pred_ir, tgt_ir)
+        + 0*mrstft_low_q_fn(pred_ir, tgt_ir)
 
         """time Energy decay curveloss"""
         #my own energy decay loss
         energy_loss_fn = nn.L1Loss()
-        pred_energy_decay_curve = self._time_energy_decay_curve(pred_tgt_ir, self.sr, 1024, 256)
-        tgt_energy_decay_curve = self._time_energy_decay_curve(gt_tgt_ir, self.sr, 1024, 256)
+        pred_energy_decay_curve = self._time_energy_decay_curve(pred_ir, self.sr, 1024, 256)
+        tgt_energy_decay_curve = self._time_energy_decay_curve(tgt_ir, self.sr, 1024, 256)
         time_edc_loss = energy_loss_fn(pred_energy_decay_curve, tgt_energy_decay_curve)
 
         """spectrogram Energy decay curveloss"""
         #xRIR edc loss
-        pred_spect = convert_ir_to_spec(pred_tgt_ir).permute(0, 2, 3, 1)
-        gt_spect = convert_ir_to_spec(gt_tgt_ir).permute(0, 2, 3, 1)
+        pred_spect = convert_ir_to_spec(pred_ir).permute(0, 2, 3, 1)
+        gt_spect = convert_ir_to_spec(tgt_ir).permute(0, 2, 3, 1)
         spect_edc_loss = self.compute_spect_energy_decay_losses(gts=torch.exp(gt_spect) - 1e-8, preds=torch.exp(pred_spect) - 1e-8)
         
         """envelope loss"""
-        pred_envelope = self.get_smoothed_envelope(pred_tgt_ir[:,0])
-        gt_envelope = self.get_smoothed_envelope(gt_tgt_ir[:,0])
-        env_length = int(0.4 *self.sr)
-        env_loss = nn.L1Loss()(pred_envelope[:, :env_length], gt_envelope[:, :env_length])
+        if pred_env is not None:
+            if pred_env.shape[1] == 1:
+                pred_env = pred_env.squeeze(1)
+            pred_env = torch.abs(pred_env) / (torch.max(torch.abs(pred_env), dim=-1, keepdim=True)[0] + 1e-7)
+        else:
+            pred_env = self.get_envelope(pred_ir[:,0])
+        gt_env = self.get_envelope(tgt_ir[:,0])
+        env_loss = self.get_env_loss(pred_env, gt_env)
+        
         return mrstft_loss, time_edc_loss, spect_edc_loss, env_loss
 
     def _cut_or_zero_padding(self, ir, end):
@@ -219,13 +277,12 @@ class loss_fn(nn.Module):
 
         return loss
 
-    def get_smoothed_envelope(self, signal, window_size=512, normalized = True):
+    def get_envelope(self, signal):
         """
-        get the envelope of the signal and smooth it using moving average
+        get the envelope of the signal 
         
         Args:
         - signal: Tensor, shape of (batch, samples) or (samples,)
-        - window_size: size of the moving average window
         """
         if not signal.is_cuda:
             signal = signal.to("cuda")
@@ -247,12 +304,15 @@ class loss_fn(nn.Module):
             
         Xf = Xf * h
         z = torch.fft.ifft(Xf)
-        envelope = torch.abs(z)  
+        envelope = torch.abs(z)[...,:N]
+        return envelope  
 
+    def smooth_envelope_mv(self, envelope, window_size=512, normalized = True):
         # --- (Moving Average) ---
-        kernel = torch.ones((1, 1, window_size), device=signal.device) / window_size
+        N = envelope.shape[-1]
+        kernel = torch.ones((1, 1, window_size), device=envelope.device) / window_size
         pad_size = window_size // 2
-        envelope_padded = F.pad(envelope.unsqueeze(1), (pad_size, pad_size), mode='reflect')
+        envelope_padded = F.pad(envelope.unsqueeze(1), (pad_size, pad_size), mode='constant', value=0)
         smoothed_envelope = F.conv1d(envelope_padded, kernel)
         
         if normalized:
@@ -260,14 +320,67 @@ class loss_fn(nn.Module):
             smoothed_envelope = smoothed_envelope / (env_max_val + 1e-7)
 
         return smoothed_envelope[:, 0, :N]
+    def smooth_envelope_gaussian(self, envelope, window_size=512, sigma=None, normalized=True):
+        # sigma = window_size / 6 by default
+        if sigma is None:
+            sigma = window_size / 6.0
+            
+        device = envelope.device
+        N = envelope.shape[-1]
+        
+        # --- gaussian smoothing ---
+        # create a sequence of coordinates from -(window_size-1)/2 to (window_size-1)/2
+        x = torch.arange(window_size, device=device).float() - (window_size - 1) / 2.0
+        kernel = torch.exp(-x.pow(2) / (2 * sigma**2))
+        kernel = kernel / kernel.sum() 
+        kernel = kernel.view(1, 1, -1)
+        pad_size = window_size // 2
+        envelope_padded = F.pad(envelope.unsqueeze(1), (pad_size, pad_size), mode='reflect')
+        
+        smoothed_envelope = F.conv1d(envelope_padded, kernel)
+        smoothed_envelope = smoothed_envelope[:, 0, :N] 
+
+        if normalized:
+            env_max_val = torch.max(smoothed_envelope, dim=-1, keepdim=True)[0]
+            smoothed_envelope = smoothed_envelope / (env_max_val + 1e-7)
+
+        return smoothed_envelope
+
+    def get_env_loss(self, pred_env, gt_env):
+        if self.smooth == "gaussian":
+            pred_env = self.smooth_envelope_gaussian(pred_env, 
+                window_size=self.env_window, 
+                normalized=self.env_normalized)
+            gt_env = self.smooth_envelope_gaussian(gt_env, 
+                window_size=self.env_window, 
+                normalized=self.env_normalized)
+        elif self.smooth == "mv":
+            pred_env = self.smooth_envelope_mv(pred_env, 
+                window_size=self.env_window, 
+                normalized=self.env_normalized)
+            gt_env = self.smooth_envelope_mv(gt_env, 
+                window_size=self.env_window, 
+                normalized=self.env_normalized)
+        elif self.smooth == None:
+            pass
+        else:
+            raise ValueError(f"Invalid smooth method: {self.smooth}")
+        env_length = int(self.env_duration * self.sr)
+        pred_env = pred_env[:, :env_length]
+        gt_env = gt_env[:, :env_length]
+        env_loss = self.env_loss(pred_env, gt_env)
+        return env_loss
 
 if __name__ == "__main__":
-    loss_fn = loss_fn(sr=16000, duration=0.363, device="cuda")
-    gt_ir_path = '/data/250010171/code/EigeNet_aa/data/debug/S005_R070_hybrid_IR_16000hz.wav'
-    pred_ir_path = '/data/250010171/code/EigeNet_aa/data/debug/S005_R070_hybrid_IR_16000hz_recon.wav'
+    wave_loss = loss_fn(sr=16000, duration=0.4, device="cuda", smooth = "gaussian", env_window = 32, env_normalized = False)
+    gt_ir_path = '/data/250010171/code/EigeNet_discriminant/data/debug/S005_R070_hybrid_IR_16000hz.wav'
+    pred_ir_path = '/data/250010171/code/EigeNet_discriminant/data/debug/S005_R070_hybrid_IR_16000hz_recon.wav'
     gt_ir = librosa.load(gt_ir_path, sr=16000)[0][:8000]
     pred_ir = librosa.load(pred_ir_path, sr=16000)[0][:8000]
     gt_ir = torch.from_numpy(gt_ir).unsqueeze(0).unsqueeze(0).cuda()
     pred_ir = torch.from_numpy(pred_ir).unsqueeze(0).unsqueeze(0).cuda()
-    mrstft_loss, time_edc_loss, spect_edc_loss, env_loss = loss_fn(pred_ir, gt_ir)
-    print(mrstft_loss, time_edc_loss, spect_edc_loss, env_loss)
+    mrstft_loss, time_edc_loss, spect_edc_loss, env_loss = wave_loss(pred_ir, gt_ir)
+    print(f"mrstft_loss: {mrstft_loss}")
+    print(f"time_edc_loss: {time_edc_loss}")
+    print(f"spect_edc_loss: {spect_edc_loss}")
+    print(f"env_loss: {env_loss}")

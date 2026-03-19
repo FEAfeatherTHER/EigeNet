@@ -26,8 +26,8 @@ export HF_ENDPOINT=https://hf-mirror.com
 
 ######## Set Experiment Configuration ###########
 exp_config="$exp_dir/debug_EigeNet_v1_aa.json"
-# 最基础模型
-exp_name="v1_aa_debug"
+# ablation: resnet18 & alternate attention & no ir decoder
+exp_name="abla_v1_aa_debug"
 
 ######## Train Model ###########
 

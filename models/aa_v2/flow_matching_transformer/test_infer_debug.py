@@ -21,7 +21,7 @@ from utils.util import load_config
 from models.dataset.acousticrooms_dataset import frame2mask, _load_and_cut_audio
 from models.dataset.utils import get_3d_point_camera_coord, convert_equirect_to_camera_coord
 from models.loss.evaluator import Evaluator
-from models.aa_v1.flow_matching_transformer.test_infer_pipeline import InferencePipeline as RIR_InferencePipeline
+from models.aa_v2.flow_matching_transformer.test_infer_pipeline import InferencePipeline as RIR_InferencePipeline
 from models.layers.utils import compute_metrics, plot_waveform
 
 
@@ -171,16 +171,18 @@ class testset_acousticrooms_dataset(Dataset):
 
 def main_debug(args):
     """主执行函数"""
-    
+    cfg = load_config(args.fmt_cfg)
+    enable_env = cfg.model.flow_matching_transformer.env
     # 初始化模型
     print("Initializing the inference pipeline...")
     inference_pipeline = RIR_InferencePipeline(
         fmt_cfg_path=args.fmt_cfg,
         fmt_ckpt_path=args.fmt_ckpt,
+        enable_env=enable_env,
         device=args.device
     )
     device = args.device
-    cfg = load_config(args.fmt_cfg)
+    return_env = args.return_env
     # classifier_free_guidance = args.classifier_free_guidance
     # print(f"Inference with Classifier free guidance: {classifier_free_guidance}")
     print(f"Pipeline initialized on device: {device}")
@@ -254,9 +256,15 @@ def main_debug(args):
                         sequences = [torch.from_numpy(item[key]).float() for item in batch_seg_list]
                         packed_batch[key] = torch.stack(sequences, dim=0)
                 
-
-                recon_audio = inference_pipeline.inference_fm(
-                    batch=packed_batch
+                if enable_env and return_env:
+                    recon_audio, recon_env = inference_pipeline.inference_fm(
+                        batch=packed_batch,
+                        return_env=True
+                    )#(b, 1, t), (b, 1, t)
+                else:
+                    recon_audio = inference_pipeline.inference_fm(
+                        batch=packed_batch,
+                        return_env=False
                     )#(b, 1, t)
 
                 if recon_audio is not None:
@@ -306,8 +314,10 @@ def main_debug(args):
         log.to_csv(metric_path, index = False)
         
 if __name__ == "__main__":
-    fmt_cfg = os.path.join(src, f"egs/rir/flow_matching_transformer/debug_EigeNet_v1_aa.json")
-    fmt_ckpt = "/data/250010171/ckpts/EigeNet/discriminant/abla_v1_aa/checkpoint_backup/epoch-0010_step-0015000_loss-1.998948"
+    fmt_cfg = os.path.join(src, f"egs/rir/flow_matching_transformer/debug_EigeNet_v2_aa.json")
+    fmt_ckpt = "/data/250010171/ckpts/EigeNet/discriminant/abla_v2_aa/checkpoint_backup/epoch-0009_step-0015000_loss-2.194273"
+    #fmt_cfg = os.path.join(src, f"egs/rir/flow_matching_transformer/EigeNet_base.json")
+    #fmt_ckpt = "/data/250010171/ckpts/EigeNet/discriminant/base/checkpoint_backup/epoch-0010_step-0016000_loss-1.996448"
     
     parser = argparse.ArgumentParser(description="Inference Script")
     args = parser.parse_args()
@@ -320,6 +330,7 @@ if __name__ == "__main__":
     args.bsz = 20
     args.reference_count_list = [8,4,1]
     args.plot_interval = 500
+    args.return_env = False
     #args.classifier_free_guidance = 5
 
     main_debug(args)
