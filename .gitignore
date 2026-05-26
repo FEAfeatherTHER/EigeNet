@@ -1,0 +1,24 @@
+*.pyc
+temp_test_wav
+libri-light
+temp_wav
+temp_result
+audiotools
+
+data/
+ckpts/
+ckpts
+output/
+swanlog/
+egs/codec/
+
+*.log
+.ipynb_checkpoints
+*.out
+.cursorrules
+
+# Python
+__pycache__/
+
+models/codec/amphion_codec
+models/codec/kmeans

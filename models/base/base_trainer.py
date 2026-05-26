@@ -189,14 +189,23 @@ class BaseTrainer:
             with self.accelerator.main_process_first():
                 if args.resume:
                     ## Automatically resume according to the current exprimental name
-                    print(
-                        "Automatically resuming from latest checkpoint in {}...".format(
-                            self.checkpoint_dir
+                    checkpoint_path_arg = getattr(args, "checkpoint_path", None)
+                    if checkpoint_path_arg:
+                        print(
+                            "Loading from specified checkpoint: {}...".format(
+                                checkpoint_path_arg
+                            )
                         )
-                    )
+                    else:
+                        print(
+                            "Automatically resuming from latest checkpoint in {}...".format(
+                                self.checkpoint_dir
+                            )
+                        )
                     start = time.monotonic_ns()
                     ckpt_path = self._load_model(
-                        checkpoint_dir=self.checkpoint_dir, 
+                        checkpoint_dir=self.checkpoint_dir,
+                        checkpoint_path=checkpoint_path_arg if checkpoint_path_arg else None,
                         resume_type=args.resume_type,
                     )
                     end = time.monotonic_ns()
@@ -399,10 +408,10 @@ class BaseTrainer:
                 hasattr(self.cfg.train, "use_emilia_dataset")
                 and self.cfg.train.use_emilia_dataset
             ):
-                train_dataset = Dataset(cfg=self.cfg, valid=False)
+                train_dataset = Dataset(cfg=self.cfg, split = 'train')
             else:
-                train_dataset = Dataset(self.cfg, valid=False)
-            train_collate = Collator(self.cfg, valid=False)
+                train_dataset = Dataset(self.cfg, split = 'train')
+            train_collate = Collator(self.cfg, split = 'train')
 
             train_loader = DataLoader(
                 train_dataset,
@@ -413,8 +422,8 @@ class BaseTrainer:
                 pin_memory=self.cfg.train.dataloader.pin_memory,
             )
 
-            valid_dataset = Dataset(cfg=self.cfg, valid=True)
-            valid_collate = Collator(self.cfg, valid=True)
+            valid_dataset = Dataset(cfg=self.cfg, split = 'test')
+            valid_collate = Collator(self.cfg, split = 'test')
 
             valid_loader = DataLoader(
                 valid_dataset,

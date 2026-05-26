@@ -45,7 +45,7 @@ class AcousticRooms_Dataset(Dataset):
     用于声学的RIR数据集。
     从一个预计算的文件加载数据集元数据
     """
-    def __init__(self, cfg=None, valid = False):
+    def __init__(self, cfg=None, split = 'train'):
         self.cfg = cfg
         self.frame_rate = cfg.preprocess.frame_rate
         self.sample_rate = cfg.preprocess.sample_rate
@@ -56,17 +56,16 @@ class AcousticRooms_Dataset(Dataset):
         self.duration = cfg.preprocess.duration
         self.reference_count = cfg.preprocess.max_reference_count
         # 从配置文件指定的路径加载片段列表
-        if valid:
+        if split == 'test':
             self.segment_list = self._load_file_list(self.cfg.dataset.test_rir_list)
+            print(f"Valid_dataset loaded {len(self.segment_list)} test segments")
         else:
             self.segment_list = self._load_file_list(self.cfg.dataset.rir_list)
+            print(f"Train_dataset loaded {len(self.segment_list)} train segments")
 
         if not self.segment_list:
             raise ValueError(f"No data loaded from {self.cfg.dataset.rir_list}. The file might be empty or in the wrong format.")
-        if valid:
-            print(f"Valid_dataset loaded {len(self.segment_list)} test segments")
-        else:
-            print(f"Train_dataset loaded {len(self.segment_list)} train segments")
+            
             
         print(f"Total duration: {round(sum([item['duration'] for item in self.segment_list]) / 3600, 2)} hours, Average duration: {np.mean([item['duration'] for item in self.segment_list])} seconds")
 
@@ -249,9 +248,9 @@ class AcousticRooms_Collator:
     用于将Roll_Music_Dataset返回的样本批处理成张量。
     它处理长度不一的序列，通过填充使其具有相同的长度。
     """
-    def __init__(self, cfg, valid = False):
+    def __init__(self, cfg, split = 'train'):
         self.cfg = cfg
-        self.valid = valid
+        self.split = split
         self.reference_count = cfg.preprocess.max_reference_count
 
     def __call__(self, batch):
@@ -263,7 +262,7 @@ class AcousticRooms_Collator:
         minimum_src_num = min(batch_valid_src_num)
         packed_batch = dict()
         keys = batch[0].keys()
-        if self.valid:
+        if self.split == 'test':
             dynamic_reference_count = min(minimum_src_num, self.reference_count)
         else:
             dynamic_reference_count = random.randint(1, min(minimum_src_num, self.reference_count))

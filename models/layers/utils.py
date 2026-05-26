@@ -11,6 +11,7 @@ from torch.nn.utils.rnn import pad_sequence
 import numpy as np
 import librosa
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
 
 def is_package_available(package_name: str) -> bool:
     try:
@@ -180,8 +181,141 @@ def compute_metrics(batch_gt_ir, batch_pred_ir, evaluator):
     
     return batch_edt_error_list, batch_c50_error_list, batch_t60_relative_error_list, batch_count_outlier
 
+class StreamingMean:
+    def __init__(self):
+        self.mean = None
+        self.n = 0
+        
+    def update(self, x: np.ndarray):
+        """传入新的 np.array 来更新均值"""
+        self.n += 1
+        if self.mean is None:
+            # 第一笔数据直接作为初始均值
+            self.mean = x.copy()
+        else:
+            # 动态更新公式
+            self.mean += (x - self.mean) / self.n
 
+def extract_stft_energy_db(rir_tensor, sr=16000, frame_rate=50, 
+                                  eps=1e-10):
+    """
+    使用 STFT 从 RIR 中提取低、中、高三个频段的能量分布图 (dB)。
+    
+    参数:
+    - rir_tensor: (B, N) 或 (N,) 的 torch.Tensor
+    - sr: 采样率，默认 16000
+    - frame_rate: 能量统计帧率(Hz)，默认 50Hz (即每帧 20ms)
 
+    """
+    if rir_tensor.ndim == 1:
+        rir_tensor = rir_tensor.unsqueeze(0)
+        
+    B, N = rir_tensor.shape
+    
+    # 1. 计算 STFT 参数
+    hop_length = sr // frame_rate
+    n_fft = 1024       
+    win_length = 1024  
+    
+    window = torch.hann_window(win_length).to(rir_tensor.device)
+    
+    # 2. 计算 STFT (center=False 避免边缘能量泄漏)
+    stft_out = torch.stft(
+        rir_tensor, 
+        n_fft=n_fft, 
+        hop_length=hop_length, 
+        win_length=win_length, 
+        window=window, 
+        center=True, 
+        return_complex=True
+    )
+    
+    # 3. 功率谱
+    power_spec = torch.abs(stft_out) ** 2
+    
+    # 6. 转为 dB 域
+    energy_db = 10 * torch.log10(power_spec + eps)
+    
+    return energy_db
+
+def convert_stft_db_to_octave_db(stft_db_matrix, sr=16000, eps=1e-10):
+    """
+    将 STFT 的功率频谱图 (dB) 聚合成 8 倍频程的能量分布图 (dB)。
+    
+    参数:
+    - stft_db_matrix: (B, F_bins, T_frames) 或 (F_bins, T_frames) 的 STFT dB 张量
+    - sr: 采样率，用于推算每个 F_bin 的真实物理频率
+    
+    返回:
+    - octave_db: (B, 8, T_frames) 的倍频程能量张量 (dB)
+    """
+    # 兼容没有 Batch 的输入
+    if stft_db_matrix.ndim == 2:
+        stft_db_matrix = stft_db_matrix.unsqueeze(0)
+        
+    B, F_bins, T_frames = stft_db_matrix.shape
+    device = stft_db_matrix.device
+    
+    # 1. 转换回线性功率域 (Linear Power)
+    # 因为输入是 dB，反向公式为 Power = 10^(dB / 10)
+    power_linear = 10 ** (stft_db_matrix / 10.0)
+    
+    # 2. 计算每个 frequency bin 对应的物理频率
+    freqs = torch.linspace(0, sr / 2, F_bins).to(device)
+    
+    # 3. 定义 8 个倍频程的上下边界 (Hz)
+    bands = [
+        (31.25, 62.5), (62.5, 125), (125, 250), (250, 500),
+        (500, 1000), (1000, 2000), (2000, 4000), (4000, 7999.0)
+    ]
+    
+    octave_energies = []
+    
+    # 4. 根据频率掩码聚合能量
+    for low, high in bands:
+        # 寻找属于当前倍频程的频率 Bin
+        mask = (freqs >= low) & (freqs < high)
+        
+        # 如果 STFT 分辨率太低导致某个频段没有 bin (通常不会，除非 n_fft 极小)
+        if not mask.any():
+            band_energy = torch.zeros(B, T_frames, device=device)
+        else:
+            # 将属于该频段的所有 Bin 的能量在频率轴 (dim=1) 上相加
+            band_energy = power_linear[:, mask, :].sum(dim=1)
+            
+        octave_energies.append(band_energy)
+        
+    # 堆叠为 (B, 8, T_frames)
+    octave_power = torch.stack(octave_energies, dim=1)
+    
+    # 5. 重新转回 dB 域
+    octave_db = 10 * torch.log10(octave_power + eps)
+    
+    return octave_db
+
+def spectrogram_edc_loss(pred_db, gt_db, eps=1e-10):
+    """
+    计算频域/倍频程的 EDC (能量衰减曲线) Loss
+    假设输入形状为 (B, F_bins, T)
+    """
+    # 1. 退回线性功率域 (因为 EDC 积分必须在能量域进行)
+    pred_power = 10 ** (pred_db / 10.0)
+    gt_power = 10 ** (gt_db / 10.0)
+    
+    # 2. 施罗德反向积分 (从后往前累加能量)
+    # torch.flip 两次是为了实现时间维度上的逆向 cumsum
+    pred_edc = torch.flip(torch.cumsum(torch.flip(pred_power, dims=[-1]), dim=-1), dims=[-1])
+    gt_edc = torch.flip(torch.cumsum(torch.flip(gt_power, dims=[-1]), dim=-1), dims=[-1])
+    
+    # 3. 转回 dB 域，计算衰减曲线的 MSE
+    pred_edc_db = 10*torch.log10(pred_edc + eps)
+    gt_edc_db = 10*torch.log10(gt_edc + eps)
+    
+    # 算 MSE，并且可以通过减去第一帧的能量来进行归一化 (只关注斜率)
+    pred_edc_norm = pred_edc_db - pred_edc_db[..., :1]
+    gt_edc_norm = gt_edc_db - gt_edc_db[..., :1]
+    
+    return F.l1_loss(pred_edc_norm, gt_edc_norm) # EDC 用 L1 往往比 MSE 更稳
 
 if __name__ == '__main__':
     midi_path = '/data/250010171/code/AnyTrainer-midi2audio/data/test/乐器编辑5s_demo/恰似你的温柔_19.76_24.76.mid'
