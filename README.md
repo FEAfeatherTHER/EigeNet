@@ -128,16 +128,6 @@ haa/
 └── hallwayBase/
 ```
 
-Key variables in `preprocess_haa.py`:
-
-| Variable | Description |
-|----------|-------------|
-| `DATASET_ROOT` | Root directory of HAA |
-| `HAA_RIR_SAMPLE_RATE` | Original sampling rate (default `48000`) |
-| `HAA_RIR_DURATION_SEC` | Duration exported per RIR (default `1.0` s) |
-| `EXPORT_RIR` | Whether to export wav files before jsonl generation |
-| `output_jsonl` | Output path, e.g. `data/haa.jsonl` |
-
 **Step 2 — Split into train / test jsonl**
 
 ```bash
@@ -203,14 +193,6 @@ cd /path/to/EigeNet
 mkdir -p ckpts
 tar -xzf EigeNet_ckpt.tar.gz -C ckpts/
 ```
-
-After extraction, the archive contains two checkpoints:
-
-| Checkpoint | Path 
-|------------|------
-| AcousticRooms pre-trained | `ckpts/EigeNet/train_on_acousticrooms/checkpoint/eigenet_ar` 
-| HAA fine-tuned | `ckpts/EigeNet/finetune_haa/checkpoint/eigenet_finetune_haa` 
-
 
 ## Training (AcousticRooms)
 
