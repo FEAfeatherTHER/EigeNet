@@ -87,7 +87,11 @@ class BaseTrainer:
             self.keep_last = [
                 i if i > 0 else float("inf") for i in self.cfg.train.keep_last
             ]
-            self.run_eval = self.cfg.train.run_eval
+        run_eval_cfg = self.cfg.train.run_eval
+        if isinstance(run_eval_cfg, (list, tuple)):
+            self.run_eval = bool(run_eval_cfg[0])
+        else:
+            self.run_eval = bool(run_eval_cfg)
 
         # set random seed
         with self.accelerator.main_process_first():
@@ -364,7 +368,7 @@ class BaseTrainer:
                 max_sentences=self.cfg.train.max_sentences
                 * self.accelerator.num_processes,
                 required_batch_size_multiple=self.accelerator.num_processes,
-            )#获取在容量内能获取的batch的索引列表
+            )
 
             if self.accelerator.is_main_process:
                 info = "Time taken to batch: {:.1f}s, #batches = {}".format(
@@ -559,7 +563,7 @@ class BaseTrainer:
 
         self.accelerator.wait_for_everyone()
 
-        # epoch结束后重置start_index
+        
         if hasattr(self.train_dataloader, "batch_sampler"):
             batch_sampler = self.train_dataloader.batch_sampler
             if hasattr(batch_sampler, "start_index"):
@@ -570,7 +574,7 @@ class BaseTrainer:
     def save_checkpoint(self):
         if self.accelerator.is_main_process:
             keep_last = self.keep_last[0]
-            # 读取self.checkpoint_dir所有的folder
+            
             all_ckpts = os.listdir(self.checkpoint_dir)
 
             all_ckpts = filter(lambda x: x.startswith("epoch"), all_ckpts)
@@ -614,7 +618,7 @@ class BaseTrainer:
 
         # self.optimizer.zero_grad()
 
-        # 计算需要跳过的batch数，只有在配置中启用了resume_skip_steps时才跳过
+
         steps_to_skip = 0
         if (
             hasattr(self.cfg.train, "resume_skip_steps")

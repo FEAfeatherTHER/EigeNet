@@ -1,10 +1,8 @@
 import sys
 import torch
 import os
-src = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) # AnyTrainer
-#sys.path.append(src)
-sys.path.insert(0, src)  # 使用 insert(0, ...) 确保优先级，并检查避免重复添加
-#print(f"sys.path: {sys.path[0]}")
+src = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, src)  
 import librosa
 import numpy as np
 import random
@@ -18,7 +16,6 @@ import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 from models.dataset.utils import get_3d_point_camera_coord, convert_equirect_to_camera_coord
 
-# --- 辅助函数 ---
 
 def frame2mask(frames, max_frame):
     frames = frames.reshape(-1)
@@ -26,10 +23,6 @@ def frame2mask(frames, max_frame):
     return seq[None, :] < frames[:, None]
 
 def _load_and_cut_audio(path, start_sec, duration_sec, sample_rate, mono = True):
-    """
-    高效加载并精确切割音频文件。
-    """
-    # librosa.load 能够高效地只加载需要的部分，而不会读取整个文件
     audio_clip, _ = librosa.load(path, sr=sample_rate, offset=start_sec, duration=duration_sec, mono = mono)
     audio_len = audio_clip.shape[-1]
     if audio_len < int(duration_sec * sample_rate):
@@ -38,13 +31,9 @@ def _load_and_cut_audio(path, start_sec, duration_sec, sample_rate, mono = True)
     
     return audio_clip, audio_len#(1, t)
 
-# --- 主数据集类 ---
 
 class AcousticRooms_Dataset(Dataset):
-    """
-    用于声学的RIR数据集。
-    从一个预计算的文件加载数据集元数据
-    """
+
     def __init__(self, cfg=None, split = 'train'):
         self.cfg = cfg
         self.frame_rate = cfg.preprocess.frame_rate
@@ -55,7 +44,6 @@ class AcousticRooms_Dataset(Dataset):
         self.metadata_root = cfg.dataset.metadata_root
         self.duration = cfg.preprocess.duration
         self.reference_count = cfg.preprocess.max_reference_count
-        # 从配置文件指定的路径加载片段列表
         if split == 'test':
             self.segment_list = self._load_file_list(self.cfg.dataset.test_rir_list)
             print(f"Valid_dataset loaded {len(self.segment_list)} test segments")
@@ -73,12 +61,10 @@ class AcousticRooms_Dataset(Dataset):
         self.wav_path_index2duration = {
             idx: item["duration"] for idx, item in enumerate(self.segment_list)
         }
-        #for dynamic batch loading,获取每个时序信号的帧数
         self.index2num_frames = [
             int(item["duration"] * self.frame_rate) + 1
             for item in self.segment_list
         ]
-        #for dynamic batch loading,获取按帧数排序的索引
         self.num_frame_indices = np.array(
             sorted(
                 range(len(self.index2num_frames)),
@@ -89,9 +75,7 @@ class AcousticRooms_Dataset(Dataset):
         random.seed(cfg.train.random_seed)
 
     def _load_file_list(self, rir_list):
-        """
-        辅助函数，从 数据集 文件加载数据。
-        """
+
         if not isinstance(rir_list, list):
             rir_list = [rir_list]
         segment_list = []
@@ -106,9 +90,7 @@ class AcousticRooms_Dataset(Dataset):
     def __len__(self):
         return len(self.segment_list)
     
-    #for dynamic batch loading,获取其帧数
     def get_num_frames(self, index):
-        # return self.wav_path_index2duration[index] * 50
         return self.wav_path_index2duration[index] * self.frame_rate
     
     def get_receiver_source_location(self, ir_path):
@@ -146,14 +128,7 @@ class AcousticRooms_Dataset(Dataset):
             ref_ir_paths = random.sample(valid_other_src_ir_paths, self.reference_count)
         elif valid_src_num == 0:
             return [], 0
-        # print(f"检查匹配ref ir info")
-        # print(f"scene_name: {scene_name}")
-        # print(f"scene_id: {scene_id}")
-        # print(f"tgt_src_idx: {tgt_src_idx}")
-        # print(f"tgt_rec_idx: {tgt_rec_idx}")
-        # for ref_ir_path in ref_ir_paths:
-        #     print(f"ref_ir_path: {ref_ir_path}")
-        # print("--------------------------------")
+       
         ref_ir_info = []
         
         for ref_ir_path in ref_ir_paths:
@@ -190,7 +165,7 @@ class AcousticRooms_Dataset(Dataset):
         ref_src_loc_list = []
         ref_ir_list = []
         ref_ir_frames_list = []
-        #检查非空
+
         if len(other_src_idx_list) == 0:
             return None
         else:
@@ -221,8 +196,6 @@ class AcousticRooms_Dataset(Dataset):
             }
 
     def __getitem__(self, idx):
-        # segment_info = self.segment_list[idx]
-        # batch = self.get_batch(segment_info)
 
         while True:
             segment_info = self.segment_list[idx]
@@ -241,20 +214,17 @@ class AcousticRooms_Dataset(Dataset):
                 continue
         return batch
 
-# --- Collator 类 ---
+# --- Collator ---
 
 class AcousticRooms_Collator:
-    """
-    用于将Roll_Music_Dataset返回的样本批处理成张量。
-    它处理长度不一的序列，通过填充使其具有相同的长度。
-    """
+   
     def __init__(self, cfg, split = 'train'):
         self.cfg = cfg
         self.split = split
         self.reference_count = cfg.preprocess.max_reference_count
 
     def __call__(self, batch):
-        # 过滤掉可能因错误产生的None值（虽然__getitem__的逻辑避免了这种情况）
+
         batch = [b for b in batch if b is not None]
         if not batch:
             return None
@@ -274,35 +244,6 @@ class AcousticRooms_Collator:
             elif  key == "cc_depth_map":
                 sequences = [torch.from_numpy(item[key]).float() for item in batch]
                 packed_batch[key] = torch.stack(sequences, dim=0)
-            # try:
-            #     if key == "all_ir" or key == "all_cc_src_loc": #(N, 1, t)
-            #         sequences = [torch.from_numpy(item[key]).float() for item in batch]
-            #         packed_batch[key] = torch.stack(sequences, dim=0)#(b, N, ...)
-            #         packed_batch[key] = packed_batch[key][:, -(dynamic_reference_count + 1):]
-            #     elif  key == "cc_depth_map":
-            #         sequences = [torch.from_numpy(item[key]).float() for item in batch]
-            #         packed_batch[key] = torch.stack(sequences, dim=0)
-            #     elif key == "all_code_mask":
-            #         sequences = [torch.from_numpy(item[key]).bool() for item in batch]
-            #         packed_batch[key] = torch.stack(sequences, dim=0)
-            #         packed_batch[key] = packed_batch[key][:, -(dynamic_reference_count + 1):]
-            # except Exception as e:
-            #     print(f"Error packing batch for key {key}: {e}. Returning a random sample instead.")
-            #     print([s.shape for s in sequences])
-            #     exit(0)
             
             
         return packed_batch
-
-if __name__ == "__main__":
-    config_path = '/data/250010171/code/EigeNet/egs/rir/flow_matching_transformer/debug_EigeNet_v3.json'
-    
-    cfg = load_config(config_path)
-    dataset = AcousticRooms_Dataset(cfg)
-    #collator = PianoCollator(cfg)
-    from tqdm import tqdm
-    for data in tqdm(dataset):
-        for key in data.keys():
-            print(key)
-            print(data[key].shape)
-        exit(0)

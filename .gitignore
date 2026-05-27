@@ -11,6 +11,7 @@ ckpts
 output/
 swanlog/
 egs/codec/
+_pg/
 
 *.log
 .ipynb_checkpoints

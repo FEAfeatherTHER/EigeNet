@@ -79,10 +79,6 @@ class DAC(nn.Module):
             layer = min(layer, depth)
         codes = codes[:, :layer]
         z, latents, codes = self.model.quantizer.from_codes(codes)
-        # print(f"*"*20)
-        # print(f"z: {z.shape}")
-        # print(f"codes: {codes.shape}")
-        # print(f"latents: {latents.shape}")
         audio = self.model.decode(z)
         return audio
     
@@ -96,20 +92,4 @@ class DAC(nn.Module):
         audio = self.model.decode(z)
         return audio
 
-if __name__ == "__main__":
-    device = "cuda"
-    signal_path = '/data/250010171/code/EigeNet_discriminant/data/debug/她说_68.63_73.63.wav'
-    import librosa
-    signal, sr = librosa.load(signal_path, sr = 16000)
-    signal = torch.from_numpy(signal).unsqueeze(0).unsqueeze(0).to(device)
-    dac = DAC("/data/250010171/ckpts/pretrained/dac/weights_16k.pth")
-    dac = dac.to(device)
-    codes = dac.encode(signal)
-    print(f"codes: {codes.shape}")
-    l = 12
-    decoded = dac.decode(codes, layer = l)
-    print(f"decoded: {decoded.shape}")
-    import soundfile as sf
-    recon_audio = decoded.squeeze(0).squeeze(0).cpu().numpy()
-    sf.write(f'/data/250010171/code/EigeNet_discriminant/data/debug/recon_audio_{l}.wav', recon_audio, sr)
     
