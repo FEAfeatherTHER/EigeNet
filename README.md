@@ -1,6 +1,6 @@
 # EigeNet
 
-A room impulse response (RIR) prediction model conditioned on depth maps, locations and reference RIRs. This project supports training on AcousticRooms, fine-tuning on HAA, and inference with acoustic metric evaluation.
+Code for "EigeNet: Geometry-Informed Multi-Modal Learning for Few-shot Novel View RIR Prediction"
 
 ## Requirements
 
@@ -229,8 +229,6 @@ Inference scripts live in `models/EigeNet/src/` and load the model and DAC codec
 
 ### AcousticRooms test set
 
-Script: `models/EigeNet/src/infer_ar.py`
-
 ```bash
 conda activate eigenet
 cd /path/to/EigeNet
@@ -239,8 +237,6 @@ python models/EigeNet/src/infer_ar.py
 ```
 
 ### HAA test set
-
-Script: `models/EigeNet/src/infer_haa.py`
 
 ```bash
 conda activate eigenet
