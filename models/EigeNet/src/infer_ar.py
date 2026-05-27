@@ -11,8 +11,8 @@ import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import Dataset
 
-src = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))) # AnyTrainer
-sys.path.insert(0, src) # AnyTrainer
+src = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))) 
+sys.path.insert(0, src) 
 
 import random
 random.seed(42)
@@ -21,7 +21,7 @@ from utils.util import load_config
 from models.dataset.acousticrooms_dataset import frame2mask, _load_and_cut_audio
 from models.dataset.utils import get_3d_point_camera_coord, convert_equirect_to_camera_coord
 from models.loss.evaluator import Evaluator
-from models.aa_v1_g2_align2_toy3.flow_matching_transformer.test_infer_pipeline import InferencePipeline as RIR_InferencePipeline
+from models.EigeNet.src.infer_pipeline import InferencePipeline as EigeNet_InferencePipeline
 from models.layers.utils import compute_metrics, plot_waveform
 import soundfile as sf
 
@@ -175,54 +175,45 @@ class testset_acousticrooms_dataset(Dataset):
 
 def main_debug(args):
     """主执行函数"""
-    cfg = load_config(args.fmt_cfg)
-    align_activate = cfg.model.flow_matching_transformer.aligner.activate
-    # 初始化模型
+    cfg = load_config(args.cfg)
+    align_activate = cfg.model.eigenet_transformer.aligner.activate
+    # initialize inference pipeline
     print("Initializing the inference pipeline...")
-    inference_pipeline = RIR_InferencePipeline(
-        fmt_cfg_path=args.fmt_cfg,
-        fmt_ckpt_path=args.fmt_ckpt,
-        align_activate=align_activate,
-        device=args.device
-    )
-    
     device = args.device
-    # classifier_free_guidance = args.classifier_free_guidance
-    # print(f"Inference with Classifier free guidance: {classifier_free_guidance}")
+    inference_pipeline = EigeNet_InferencePipeline(
+        cfg_path=args.cfg,
+        ckpt_path=args.ckpt,
+        align_activate=align_activate,
+        device=device
+    )
     print(f"Pipeline initialized on device: {device}")
     
-    # 准备阶段
-    # 准备dataset超参
+    # prepare dataset parameters
     duration = args.test_duration
     sample_rate = cfg.preprocess.sample_rate
     sample_length = int(duration * sample_rate)
     bsz = args.bsz
 
-    # 准备 evaluator
+    # initialize evaluator
     evaluator = Evaluator()
 
-    # 创建生成结果目录
-    fmt_ckpt = args.fmt_ckpt
-    log_name = fmt_ckpt.split("/")[-4]
-    exp_name = fmt_ckpt.split("/")[-3]
+    # create output folder
+    ckpt = args.ckpt
+    log_name = ckpt.split("/")[-4]
+    exp_name = ckpt.split("/")[-3]
     model_log_exp_name = f"{log_name}_{exp_name}"
-    train_step = fmt_ckpt.split("/")[-1].split("_")[1]
+    #train_step = ckpt.split("/")[-1].split("_")[1]
     test_jsonl_list = args.test_jsonl_list
     if args.save:
-        save_root = '/mnt/data/jingchong/eigenet/output'
+        save_root = args.save_root
         os.makedirs(save_root, exist_ok=True)
         
     for test_jsonl in test_jsonl_list:
-        jsonl_name = test_jsonl.split("/")[-1].split(".")[0]
-        split_name = jsonl_name.split("_")[-1]
-        print(f"inference on {split_name} split")
-        print()
-        
-        output_folder = os.path.join(src, f"data/output/{model_log_exp_name}/{train_step}/{split_name}")
+        output_folder = os.path.join(src, f"data/output/{model_log_exp_name}/")
         os.makedirs(output_folder, exist_ok=True)
         print(f"\noutput_folder: {output_folder}\n")
         if args.save:
-            audio_save_dir = os.path.join(save_root, f"{model_log_exp_name}/{train_step}/{split_name}")
+            audio_save_dir = os.path.join(save_root, f"{model_log_exp_name}/")
             os.makedirs(audio_save_dir, exist_ok=True)
             print(f"\naudio saved to: {audio_save_dir}\n")
 
@@ -233,13 +224,13 @@ def main_debug(args):
             print(f"dynamic_reference_count: {dynamic_reference_count}")
             print()
         
-            # 初始化指标
+            # initialize metrics
             edt_error_list = []
             c50_error_list = []
             t60_error_list = []
             total_count_outlier = 0
 
-            # 生成管线
+            # start inference
             print(f"start inference")
             print()
             for batch_idx in tqdm(range(0, len(dataset), bsz)):
@@ -274,13 +265,13 @@ def main_debug(args):
                         save_path_list.extend(sequences)
                 
                 
-                recon_audio, _ = inference_pipeline.inference_fm(
+                recon_audio, _ = inference_pipeline.inference(
                     batch=packed_batch,
                 )#(b, 1, t)
                 B = recon_audio.shape[0]
 
                 if recon_audio is not None:
-                    # 测量metric
+                    # measure metrics
                     tgt_ir = packed_batch["all_ir"][:, -1].cpu().numpy() #(b, 1, t)
                     tgt_ir = tgt_ir[...,:sample_length]
                     recon_audio = recon_audio[...,:sample_length]
@@ -307,8 +298,6 @@ def main_debug(args):
                         plot_interval = args.plot_interval
                         if plot_interval != 0:
                             if batch_idx % plot_interval == 0:
-                                #output_path = os.path.join(output_folder, f"{audio_name}.wav")
-                                #sf.write(output_path, recon_audio, samplerate=16000)
                                 gt_tgt_ir = tgt_ir[...,:sample_length][0]
                                 pred_tgt_ir = recon_audio[...,:sample_length][0]
                                 fig, axs = plt.subplots(2, 1, figsize=(10, 10))
@@ -326,7 +315,6 @@ def main_debug(args):
             total_c50_error = round(np.mean(c50_error_list), 3)
             total_t60_error = round(np.mean(t60_error_list), 3)
             log.loc[len(log)] = [dynamic_reference_count ,total_edt_error, total_c50_error, total_t60_error, total_count_outlier]
-            print(f"split_name: {split_name}")
             print(f"reference_count: {dynamic_reference_count}")
             print(f"edt_error: {total_edt_error}")
             print(f"c50_error: {total_c50_error}")
@@ -334,33 +322,25 @@ def main_debug(args):
             print(f"outlier_count: {total_count_outlier}")
             print()
         
-        metric_path = os.path.join(output_folder, f"{duration}_metrics_tmp.csv")
+        metric_path = os.path.join(output_folder, f"{duration}_metrics.csv")
         log.to_csv(metric_path, index = False)
         
 if __name__ == "__main__":
-    # # no align
-    # fmt_cfg = os.path.join(src, f"egs/rir/flow_matching_transformer/debug_EigeNet_v1_g2_aa_noalign.json")
-    # fmt_ckpt = "/data/250010171/code/EigeNet_discriminant/ckpts/discriminant/base2_g2_noalign_debug/checkpoint/epoch-0009_step-0007400_loss-2.125936"
-    
-    # align
-    fmt_cfg = os.path.join(src, f"egs/rir/flow_matching_transformer/debug_EigeNet_v1_g2_aa_align2_toy3.json")
-    fmt_ckpt = "/data/250010171/code/EigeNet_discriminant/ckpts/discriminant/base2_aa_align_toy3.4/checkpoint/epoch-0009_step-0007000_loss-2.249993"
+    cfg = os.path.join(src, f"egs/rir/EigeNet/EigeNet.json")
+    ckpt = "path/to/checkpoint/eigenet_ar"
     
     parser = argparse.ArgumentParser(description="Inference Script")
     args = parser.parse_args()
-
-    args.test_jsonl_list = ["/data/250010171/code/EigeNet_discriminant/data/AcousticRooms_test_unseen.jsonl"]
-
-    # args.test_jsonl_list = ["/data/250010171/code/EigeNet_discriminant/data/AcousticRooms_test_unseen.jsonl",
-    # "/data/250010171/code/EigeNet_discriminant/data/AcousticRooms_test_seen.jsonl"]
+    args.test_jsonl_list = ["path/to/AcousticRooms_test.jsonl"]
     args.device = "cuda"
     args.test_duration = 0.363
-    args.fmt_cfg = fmt_cfg
-    args.fmt_ckpt = fmt_ckpt
+    args.cfg = cfg
+    args.ckpt = ckpt
     args.bsz = 20
     args.reference_count_list = [8,4,1]
     args.plot_interval = 0
-    args.save = True
+    args.save = False
+    args.save_root = "path/to/save_root"
 
     main_debug(args)
     

@@ -19,14 +19,14 @@ echo work_dir: $work_dir
 export WORK_DIR=$work_dir
 export PYTHONPATH=$work_dir
 export PYTHONIOENCODING=UTF-8
-export SWANLAB_API_KEY="o9QXwNCi5te7YakofmbxO"
-export HF_ENDPOINT=https://hf-mirror.com
+#export SWANLAB_API_KEY="your_swanlab_api_key"
+#export HF_ENDPOINT=https://hf-mirror.com
 
 # export OMP_NUM_THREADS=18
 
 ######## Set Experiment Configuration ###########
 exp_config="$exp_dir/EigeNet.json"
-exp_name="debug"
+exp_name="trian_on_acousticrooms"
 
 ######## Train Model ###########
 

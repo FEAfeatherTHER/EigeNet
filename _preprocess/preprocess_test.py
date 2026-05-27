@@ -15,11 +15,12 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 seed_num = 42
 random.seed(seed_num)
 np.random.seed(seed_num)
-dataset_root = '/mnt/data1/jingchong/AcousticRooms'
+dataset_root = 'path/to/AcousticRooms'
+output_jsonl = 'path/to/AcousticRooms_test.jsonl'
+
 DEPTH_ROOT = os.path.join(dataset_root, 'depth_map')
 METADATA_ROOT = os.path.join(dataset_root, 'metadata')
 RIR_ROOT = os.path.join(dataset_root, 'single_channel_ir')
-output_jsonl = '/mnt/workspace/jingchong/mycode/RIR/EigeNet/data/AcousticRooms_test.jsonl'
 
 test_scene_ids = [
             "Apartments_idx_50",
@@ -106,7 +107,7 @@ def seg_info_generator(all_rir_list):
         rec_idx, src_idx = int(rir_file_name.split("_")[1][1:]), int(rir_file_name.split("_")[0][1:])
         metadata_path = os.path.join(METADATA_ROOT, scene_name, scene_id, f"S00{src_idx}_R00{rec_idx}.json")
         depth_path = os.path.join(DEPTH_ROOT, scene_name, scene_id, f"{rec_idx}.npy")
-        duration = librosa.get_duration(filename=rir_path)
+        duration = librosa.get_duration(path=rir_path)
         yield (rir_path, metadata_path, depth_path, scene_name, scene_id, src_idx, rec_idx, duration)
     
 

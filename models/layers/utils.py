@@ -317,11 +317,6 @@ def spectrogram_edc_loss(pred_db, gt_db, eps=1e-10):
     
     return F.l1_loss(pred_edc_norm, gt_edc_norm) # EDC 用 L1 往往比 MSE 更稳
 
-if __name__ == '__main__':
-    midi_path = '/data/250010171/code/AnyTrainer-midi2audio/data/test/乐器编辑5s_demo/恰似你的温柔_19.76_24.76.mid'
-    midi = pretty_midi.PrettyMIDI(midi_path)
-    midi_seq = Midi_To_Seqence(midi)
-    print(midi_seq.shape)
 
 
 

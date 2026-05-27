@@ -19,8 +19,8 @@ echo work_dir: $work_dir
 export WORK_DIR=$work_dir
 export PYTHONPATH=$work_dir
 export PYTHONIOENCODING=UTF-8
-export SWANLAB_API_KEY="o9QXwNCi5te7YakofmbxO"
-export HF_ENDPOINT=https://hf-mirror.com
+#export SWANLAB_API_KEY="your_swanlab_api_key"
+#export HF_ENDPOINT=https://hf-mirror.com
 
 # export OMP_NUM_THREADS=18
 
@@ -38,6 +38,6 @@ accelerate launch \
     --exp_name=$exp_name \
     --log_level debug \
     --dataloader_seed 6006 \
-    #--resume \
-    #--resume_type finetune \
-    #--checkpoint_path 
+    --resume \
+    --resume_type finetune \
+    --checkpoint_path path/to/checkpoint/eigenet_ar

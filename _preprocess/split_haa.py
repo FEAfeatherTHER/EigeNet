@@ -11,7 +11,6 @@ from glob import glob
 import json
 import random
 from collections import defaultdict
-HAA_ROOT = '/mnt/data1/jingchong/haa'
 
 def split_dataset(input_file, train_file, test_file, root_dir, train_ratio=0.8, seed=42):
     random.seed(seed)
@@ -73,9 +72,10 @@ def split_dataset(input_file, train_file, test_file, root_dir, train_ratio=0.8, 
 
 
 if __name__ == "__main__":
-    INPUT_JSONL = '/mnt/workspace/jingchong/mycode/RIR/EigeNet/data/haa.jsonl'
-    TRAIN_JSONL = "/mnt/workspace/jingchong/mycode/RIR/EigeNet/data/haa_train.jsonl"
-    TEST_JSONL = "/mnt/workspace/jingchong/mycode/RIR/EigeNet/data/haa_test.jsonl"
+    HAA_ROOT = 'path/to/haa'
+    INPUT_JSONL = 'path/to/haa.jsonl'
+    TRAIN_JSONL = 'path/to/haa_train.jsonl'
+    TEST_JSONL = 'path/to/haa_test.jsonl'
     split_dataset(
         input_file=INPUT_JSONL, 
         train_file=TRAIN_JSONL, 

@@ -2,12 +2,12 @@
     "model_type": "EigeNet",
     "dataset": {
         "rir_list": [
-            ["/mnt/workspace/jingchong/mycode/RIR/EigeNet/data/AcousticRooms_train.jsonl", 1]
+            ["path/to/AcousticRooms_train.jsonl", 1]
         ],
-        "test_rir_list": ["/mnt/workspace/jingchong/mycode/RIR/EigeNet/data/AcousticRooms_test.jsonl"],
-        "depth_map_root": "/mnt/data1/jingchong/AcousticRooms/depth_map/",
-        "rir_root": "/mnt/data1/jingchong/AcousticRooms/single_channel_ir/",
-        "metadata_root": "/mnt/data1/jingchong/AcousticRooms/metadata/",
+        "test_rir_list": ["path/to/AcousticRooms_test.jsonl"],
+        "depth_map_root": "path/to/AcousticRooms/depth_map/",
+        "rir_root": "path/to/AcousticRooms/single_channel_ir/",
+        "metadata_root": "path/to/AcousticRooms/metadata/",
     },
     "preprocess": {
         "sample_rate": 16000,
@@ -17,7 +17,7 @@
         },
     "model": {
         "DAC":{
-            "path": "/mnt/workspace/jingchong/ckpt/pretained/dac/ckpt/weights_16k.pth"
+            "path": "path/to/dac/weights_16k.pth"
         },
         "eigenet_transformer": {
             "hidden_size": 1024,
@@ -79,7 +79,7 @@
             "alpha": 0.99,
         }
     },
-    "log_dir": "/mnt/workspace/jingchong/mycode/RIR/EigeNet/ckpts/EigeNet",
+    "log_dir": "path/to/ckpts/EigeNet",
     "train": {
         "max_epoch": 10,
         "use_dynamic_batchsize": false,
@@ -96,7 +96,7 @@
         },
         "ddp": false,
         "random_seed": 114,
-        "batch_size": 4, 
+        "batch_size": 48, 
         "epochs": 5000,
         "max_steps": 20000,
         "total_training_steps": 800000,
@@ -113,7 +113,7 @@
             3
         ],
         "run_eval": [
-            true
+            false
         ],
         "dataloader": {
             "num_worker": 2,
@@ -127,9 +127,9 @@
         "visualize_interval":0,
     },
     "tracker":{
-        "dummy_run":false,
+        "dummy_run":true,
         "type":"swanlab",
-        "project_name":"EigeNet_base2",
+        "project_name":"EigeNet_train_on_acousticrooms",
         "config":{
             "loss_weight":{
                 "mrstft_loss_weight": 1.0,

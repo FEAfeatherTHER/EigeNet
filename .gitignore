@@ -12,6 +12,7 @@ output/
 swanlog/
 egs/codec/
 _pg/
+evaluate/
 
 *.log
 .ipynb_checkpoints

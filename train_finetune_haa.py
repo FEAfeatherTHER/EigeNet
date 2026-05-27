@@ -14,7 +14,7 @@ from utils.util import load_config
 
 def build_trainer(args, cfg):
     supported_trainer = {
-        "eigenet_transformer_finetune_haa": EigeNetTrainer,
+        "EigeNet": EigeNetTrainer,
     }
 
     trainer_class = supported_trainer[cfg.model_type]

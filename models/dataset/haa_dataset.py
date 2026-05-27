@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import Dataset
 import glob
-src = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) # AnyTrainer
-sys.path.insert(0, src) # AnyTrainer
+src = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
+sys.path.insert(0, src) 
 
 import random
 random.seed(42)
@@ -18,7 +18,7 @@ from einops import rearrange
 from models.dataset.acousticrooms_dataset import frame2mask, _load_and_cut_audio
 from models.dataset.utils import get_3d_point_camera_coord, convert_equirect_to_camera_coord
 from utils.util import load_config
-HAA_ROOT = '/data/share/amphion/data/noise-and-rirs/haa'
+HAA_ROOT = 'path/to/haa'
 SCENE_NAMES = ['classroomBase', 'complexBase', 'hallwayBase', 'dampenedBase']
 
 class HAA_dataset(Dataset):
@@ -195,14 +195,3 @@ class HAA_collator:
             
             
         return packed_batch
-
-if __name__ == "__main__":
-    cfg_path = '/data/250010171/code/EigeNet_discriminant/egs/rir/flow_matching_transformer/debug_EigeNet_v1_g2_aa_align2_finetune_haa.json'
-    cfg = load_config(cfg_path)
-    dataset = HAA_dataset(cfg, split = 'test')
-    print(len(dataset))
-    demo = dataset[0]
-    for key in demo.keys():
-        print(key)
-        print(demo[key].shape)
-

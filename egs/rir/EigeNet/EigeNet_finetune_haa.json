@@ -1,8 +1,8 @@
 {
-    "model_type": "flow_matching_transformer_anyrir",
+    "model_type": "EigeNet",
     "dataset": {
-        "haa_train_path": "/mnt/workspace/jingchong/mycode/RIR/EigeNet/data/haa_train.jsonl",
-        "haa_test_path": "/mnt/workspace/jingchong/mycode/RIR/EigeNet/data/haa_test.jsonl",
+        "haa_train_path": "path/to/haa_train.jsonl",
+        "haa_test_path": "path/to/haa_test.jsonl",
     },
     "preprocess": {
         "sample_rate": 16000,
@@ -12,9 +12,9 @@
         },
     "model": {
         "DAC":{
-            "path": "/mnt/workspace/jingchong/ckpt/pretained/dac/ckpt/weights_16k.pth"
+            "path": "path/to/dac/weights_16k.pth"
         },
-        "flow_matching_transformer": {
+        "eigenet_transformer": {
             "hidden_size": 1024,
             "pre_dim": 512,
             "depth_resol": [256, 512],
@@ -75,7 +75,7 @@
             "alpha": 0.99,
         }
     },
-    "log_dir": "/mnt/workspace/jingchong/mycode/RIR/EigeNet/ckpts/EigeNet",
+    "log_dir": "path/to/ckpts/EigeNet",
     "train": {
         "max_epoch": 10,
         "use_dynamic_batchsize": false,
@@ -109,7 +109,7 @@
             3
         ],
         "run_eval": [
-            true
+            false
         ],
         "dataloader": {
             "num_worker": 2,
@@ -123,9 +123,9 @@
         "visualize_interval":0,
     },
     "tracker":{
-        "dummy_run": false,
+        "dummy_run": true,
         "type":"swanlab",
-        "project_name":"EigeNet_base2_finetune_haa",
+        "project_name":"EigeNet_finetune_haa",
         "config":{
             "loss_weight":{
                 "mrstft_loss_weight": 1.0,

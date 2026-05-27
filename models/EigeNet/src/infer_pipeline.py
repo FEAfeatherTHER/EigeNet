@@ -13,14 +13,13 @@ import random
 import math
 import numpy as np
 
-from models.aa_v1_g2_align2_toy3.flow_matching_transformer.fmt_model import FlowMatchingTransformer
+from models.EigeNet.src.model import EigeNetTransformer
 from models.layers.dac_codec import DAC
 from utils.util import load_config
 
 
-# Flow Matching Transformer
-def build_fmt_model(cfg, device):
-    model = FlowMatchingTransformer(cfg=cfg.model.flow_matching_transformer)
+def build_EigeNet_model(cfg, device):
+    model = EigeNetTransformer(cfg=cfg.model.eigenet_transformer)
     model.eval()
     model.to(device)
     return model
@@ -49,23 +48,23 @@ def load_wav(sample_rate, wav_path, device):
 class InferencePipeline:
     def __init__(
         self,
-        fmt_cfg_path=None,
-        fmt_ckpt_path=None,
+        cfg_path=None,
+        ckpt_path=None,
         align_activate=False,
         device=None,
     ):
         self.device = device
         self.align_activate = align_activate
-        self.fmt_cfg = load_config(fmt_cfg_path)
-        self.fmt_model = load_checkpoint(
-            build_fmt_model, self.fmt_cfg, fmt_ckpt_path, device
+        self.eigenet_cfg = load_config(cfg_path)
+        self.eigenet_model = load_checkpoint(
+            build_EigeNet_model, self.eigenet_cfg, ckpt_path, device
         )
-        print(f"#Params of Flow Matching model: {count_parameters(self.fmt_model)}")
-        self.sample_rate = self.fmt_cfg.preprocess.sample_rate
+        print(f"#Params of  model: {count_parameters(self.eigenet_model)}")
+        self.sample_rate = self.eigenet_cfg.preprocess.sample_rate
         self._build_output_model()
     
     def _build_output_model(self):
-        self.audio_codec = DAC(self.fmt_cfg.model.DAC.path)
+        self.audio_codec = DAC(self.eigenet_cfg.model.DAC.path)
         self.audio_codec.eval()
         self.audio_codec.to(self.device)
     
@@ -87,7 +86,7 @@ class InferencePipeline:
         pred_audio = self.audio_codec.decode_z(z)
         return pred_audio
 
-    def inference_fm(
+    def inference(
         self,
         batch,
     ):  
@@ -102,9 +101,9 @@ class InferencePipeline:
 
         with torch.no_grad():
             if self.align_activate:
-                predict_ir_z, predict_align_feat = self.fmt_model.forward(all_ir_z, cc_depth_map, all_cc_src_loc)
+                predict_ir_z, predict_align_feat = self.eigenet_model.forward(all_ir_z, cc_depth_map, all_cc_src_loc)
             else:
-                predict_ir_z = self.fmt_model.forward(all_ir_z, cc_depth_map, all_cc_src_loc)
+                predict_ir_z = self.eigenet_model.forward(all_ir_z, cc_depth_map, all_cc_src_loc)
             predict_ir_z = predict_ir_z.transpose(1, 2) #(b, t, d) -> (b, d, t)
             synthesized_audio = self.decode_z_to_audio(predict_ir_z)   
             return synthesized_audio.cpu().numpy(), predict_align_feat.cpu()
