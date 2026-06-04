@@ -310,9 +310,8 @@ class AttnProcessor:
             # mask. e.g. inference got a batch with different target durations, mask out the padding
             if self.attn_mask_enabled and mask is not None:
                 attn_mask = mask
-                q_mask = attn_mask.unsqueeze(1).unsqueeze(-1)  # 'b n -> b 1 n 1'
-                k_mask = attn_mask.unsqueeze(1).unsqueeze(1)  # 'b n -> b 1 1 n'
-                attn_mask = q_mask & k_mask
+                attn_mask = attn_mask.unsqueeze(1).unsqueeze(1)  # 'b n -> b 1 1 n'
+                attn_mask = attn_mask.expand(batch_size, attn.heads, query.shape[-2], key.shape[-2])
             else:
                 attn_mask = None
             x = F.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=0.0, is_causal=False)
