@@ -37,7 +37,7 @@ class DiT(nn.Module):
         latent_dim=100,
         qk_norm=None,
         pe_attn_head=None,
-        attn_backend="torch",  # "torch" | "flash_attn"
+        attn_backend="flex",
         attn_mask_enabled=False,
         long_skip_connection=False,
         checkpoint_activations=False,

@@ -293,7 +293,9 @@ class BaseTrainer:
         elif resume_type == "finetune":
             # Load only the model weights
             accelerate.load_checkpoint_and_dispatch(
-                self.accelerator.unwrap_model(self.model),
+                # Weight loading targets the underlying module, not the
+                # torch.compile wrapper whose state keys include _orig_mod.
+                self.accelerator.unwrap_model(self.model, keep_torch_compile=False),
                 os.path.join(checkpoint_path, "pytorch_model.bin"),
             )
             if self.accelerator.is_main_process:
@@ -348,13 +350,7 @@ class BaseTrainer:
         if self.cfg.train.use_dynamic_batchsize:
             print("Use Dynamic Batchsize......")
             Dataset, Collator = self._build_dataset()
-            if (
-                hasattr(self.cfg.train, "use_emilia_dataset")
-                and self.cfg.train.use_emilia_dataset
-            ):
-                train_dataset = Dataset(cfg=self.cfg)
-            else:
-                train_dataset = Dataset(cfg = self.cfg)
+            train_dataset = Dataset(cfg=self.cfg)
             train_collate = Collator(self.cfg)
 
             t = time.time()
@@ -399,22 +395,16 @@ class BaseTrainer:
                     batches, drop_last=False, use_random_sampler=True
                 ),
                 pin_memory=self.cfg.train.dataloader.pin_memory,
-                prefetch_factor=32,
+                **({"prefetch_factor": 32} if self.cfg.train.dataloader.num_worker > 0 else {}),
             )
             self.accelerator.wait_for_everyone()
 
-            valid_loader = None
+            valid_loader = self._build_validation_dataloader()
 
         else:
             print("Use Normal Batchsize......")
             Dataset, Collator = self._build_dataset()
-            if (
-                hasattr(self.cfg.train, "use_emilia_dataset")
-                and self.cfg.train.use_emilia_dataset
-            ):
-                train_dataset = Dataset(cfg=self.cfg, split = 'train')
-            else:
-                train_dataset = Dataset(self.cfg, split = 'train')
+            train_dataset = Dataset(self.cfg, split='train')
             train_collate = Collator(self.cfg, split = 'train')
 
             train_loader = DataLoader(
@@ -426,17 +416,9 @@ class BaseTrainer:
                 pin_memory=self.cfg.train.dataloader.pin_memory,
             )
 
-            valid_dataset = Dataset(cfg=self.cfg, split = 'test')
-            valid_collate = Collator(self.cfg, split = 'test')
-
-            valid_loader = DataLoader(
-                valid_dataset,
-                shuffle=False,
-                collate_fn=valid_collate,
-                batch_size=self.cfg.valid.batch_size,
-                num_workers=self.cfg.train.dataloader.num_worker,
-                pin_memory=self.cfg.train.dataloader.pin_memory,
-            )
+            # Model-specific evaluation owns reference selection and sharding;
+            # reusing the random training collator changes the evaluation task.
+            valid_loader = self._build_validation_dataloader()
 
             self.accelerator.wait_for_everyone()
 

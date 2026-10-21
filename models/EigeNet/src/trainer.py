@@ -17,7 +17,7 @@ import accelerate
 import os
 import math
 from accelerate import DistributedDataParallelKwargs
-from accelerate.utils import ProjectConfiguration
+from accelerate.utils import ProjectConfiguration, TorchDynamoPlugin
 
 from transformers import Wav2Vec2BertModel
 from transformers import SeamlessM4TFeatureExtractor
@@ -27,12 +27,17 @@ import matplotlib.pyplot as plt
 
 from models.base.base_trainer import BaseTrainer
 from models.dataset.acousticrooms_dataset import AcousticRooms_Dataset, AcousticRooms_Collator
+from models.dataset.rotation_augmentation import RotationAugmentation
 
 from models.loss.waveform_loss import loss_fn as waveform_loss_fn
 from models.loss.evaluator import Evaluator
-from models.layers.utils import compute_metrics, plot_waveform, convert_stft_db_to_octave_db, extract_stft_energy_db, spectrogram_edc_loss
+from models.layers.utils import OctaveEnergyFeatures, spectrogram_edc_loss
 from models.layers.dac_codec import DAC
 from models.EigeNet.src.model import EigeNetTransformer
+from models.EigeNet.src.evaluate import (
+    EigeNetPredictor, build_evaluation_loader, evaluate_loader,
+    scalar_log_values, write_summary,
+)
 
 import shutil
 import json
@@ -48,6 +53,10 @@ def mean_flat(x):
 
 class EigeNetTrainer(BaseTrainer):
     def __init__(self, args, cfg):
+        augmentation = cfg.train.rotation_augmentation
+        self.rotation_augmentation = RotationAugmentation(
+            enabled=augmentation.enabled, probability=augmentation.probability,
+        )
         super(EigeNetTrainer, self).__init__(args, cfg)
         self.cfg = cfg
         self.sample_rate = cfg.preprocess.sample_rate
@@ -65,6 +74,12 @@ class EigeNetTrainer(BaseTrainer):
             env_loss_alpha=self.cfg.loss.env.alpha,
         )
         self._build_output_model()
+        if self.aligner_activate:
+            # Fixed windows and frequency boundaries are reused across steps;
+            # target extraction remains outside the compiled model.
+            self.alignment_features = OctaveEnergyFeatures(
+                sr=self.sample_rate, frame_rate=self.cfg.preprocess.frame_rate,
+            ).to(self.accelerator.device)
 
     def _init_accelerator(self):
         self.exp_dir = os.path.join(
@@ -81,6 +96,16 @@ class EigeNetTrainer(BaseTrainer):
             log_with=self.cfg.tracker.type,
             project_config=project_config,
             kwargs_handlers=ddp_kwargs,
+            # K varies between batches although every RIR is 0.5 s long.
+            # Accelerate applies compilation after distributed model wrapping.
+            dynamo_plugin=TorchDynamoPlugin(
+                backend="inductor", mode="default", dynamic=True, fullgraph=False,
+                # PyTorch 2.8 splits RMSNorm's weight-gradient reduction using
+                # a shape-dependent factor, generating fractional Triton indices
+                # for variable reference counts. Keep the reduction unsplit;
+                # dynamic shapes, FlexAttention and distributed training remain enabled.
+                options={"split_reductions": False},
+            ),
         )
         if self.accelerator.is_main_process:
             os.makedirs(project_config.project_dir, exist_ok=True)
@@ -118,6 +143,17 @@ class EigeNetTrainer(BaseTrainer):
     def _build_dataset(self):
         return AcousticRooms_Dataset, AcousticRooms_Collator
 
+    def _build_validation_dataloader(self):
+        # Evaluation uses independent local RNGs and non-overlapping shards.
+        # Do not accelerator.prepare this loader: padding would duplicate targets.
+        settings = self.cfg.evaluation
+        return build_evaluation_loader(
+            self.cfg, max_references=settings.max_references, seed=settings.seed,
+            rank=self.accelerator.process_index,
+            world_size=self.accelerator.num_processes,
+            num_workers=self.cfg.train.dataloader.num_worker,
+        )
+
     def _build_output_model(self):
         self.audio_codec = DAC(self.cfg.model.DAC.path)
         self.audio_codec.eval()
@@ -143,15 +179,7 @@ class EigeNetTrainer(BaseTrainer):
         return:
         align_features:(B, t, 8)
         """
-        if audio.dim() == 3:
-            audio = audio[:, 0]
-        elif audio.dim() == 2:
-            pass
-        else:
-            raise ValueError(f"The dimension of audio must be 2 or 3, but got {audio.dim()}")
-        align_features = extract_stft_energy_db(audio, sr=self.sample_rate, frame_rate=self.cfg.preprocess.frame_rate)
-        align_features = convert_stft_db_to_octave_db(align_features).transpose(1, 2)
-        return align_features
+        return self.alignment_features(audio)
 
     def get_align_loss(self, x, y):
         """
@@ -164,7 +192,7 @@ class EigeNetTrainer(BaseTrainer):
         min_length = min(x.shape[1], y.shape[1])
         x = x[:, :min_length]
         y = y[:, :min_length]
-        alignment_l1_loss = nn.L1Loss()(x, y)
+        alignment_l1_loss = F.l1_loss(x, y)
         alignment_edc_loss = spectrogram_edc_loss(x, y)
         return alignment_l1_loss, alignment_edc_loss
     
@@ -172,24 +200,35 @@ class EigeNetTrainer(BaseTrainer):
         pred_audio = self.audio_codec.decode_z(z)
         return pred_audio
 
+    def _augmentation_generator(self):
+        """Separate augmentation RNG, reproducible at optimizer-step boundaries."""
+        accumulation = self.cfg.train.gradient_accumulation_step
+        microstep = self.step * accumulation + self.batch_count % accumulation
+        seed = (self.cfg.train.random_seed + self.accelerator.process_index
+                + self.accelerator.num_processes * microstep) % (2**63 - 1)
+        return torch.Generator(device=self.accelerator.device).manual_seed(seed)
+
     def _train_step(self, batch):
         train_losses = {}
         total_loss = 0
         train_stats = {}
         all_ir = batch["all_ir"].to(self.accelerator.device)  # [B, N, 1, T]
         gt_tgt_ir = all_ir[:,-1]
-        #inter_ir = rearrange(all_ir, "b n 1 t -> (b n) 1 t").squeeze(-2) #(B*N, T)
-        #gt_env = self.waveform_loss_fn.smooth_envelope_gaussian(self.waveform_loss_fn.get_envelope(inter_ir)).unsqueeze(1)#(B*N, 1, T)
         all_cc_src_loc = batch["all_cc_src_loc"].to(self.accelerator.device) # [B, N, 3]
-        cc_depth_map = batch["cc_depth_map"].to(self.accelerator.device) # [B, 256, 512, 3]
+        cc_depth_map = batch["cc_depth_map"].to(self.accelerator.device) # [B, 3, H, W]
+        cc_depth_map, all_cc_src_loc = self.rotation_augmentation(
+            cc_depth_map, all_cc_src_loc, generator=self._augmentation_generator(),
+        )
         
-        all_ir_z = self.encode_audio_to_z(all_ir) #(B, N, T, 1024)
-        align_l1_loss = torch.zeros(1).to(self.accelerator.device)
-        align_edc_loss = torch.zeros(1).to(self.accelerator.device)
+        # The model creates target tokens from time and geometry, so encode
+        # references only. Target audio is still used by all active losses.
+        ref_ir_z = self.encode_audio_to_z(all_ir[:, :-1])
+        align_l1_loss = all_ir.new_zeros(())
+        align_edc_loss = all_ir.new_zeros(())
         if not self.aligner_activate:
-            pred_tgt_ir_z = self.model(all_ir_z, cc_depth_map, all_cc_src_loc)
+            pred_tgt_ir_z = self.model(ref_ir_z, cc_depth_map, all_cc_src_loc)
         else:
-            pred_tgt_ir_z, pred_align_features = self.model(all_ir_z, cc_depth_map, all_cc_src_loc)
+            pred_tgt_ir_z, pred_align_features = self.model(ref_ir_z, cc_depth_map, all_cc_src_loc)
             gt_align_features = self.get_align_features(gt_tgt_ir) 
             align_l1_loss, align_edc_loss = self.get_align_loss(pred_align_features, gt_align_features)
         pred_tgt_ir = self.decode_z_to_audio(pred_tgt_ir_z.transpose(-1, -2))
@@ -197,11 +236,10 @@ class EigeNetTrainer(BaseTrainer):
             print(f"pred_tgt_ir is nan or inf")
             exit()
         
-        mrstft_loss, time_edc_loss, spect_edc_loss, env_loss = self.waveform_loss_fn(pred_tgt_ir, gt_tgt_ir)
+        mrstft_loss, time_edc_loss, env_loss = self.waveform_loss_fn(pred_tgt_ir, gt_tgt_ir)
         
         main_loss = self.cfg.loss.mrstft_loss_weight * mrstft_loss
         auxiliary_loss = self.cfg.loss.time_edc_loss_weight * time_edc_loss \
-            + self.cfg.loss.spect_edc_loss_weight * spect_edc_loss \
             + self.cfg.loss.env_loss_weight * env_loss
         alignment_loss_weight_scale = self.loss_weight_warmup_factor(type = 'alignment')
         alignment_loss = self.cfg.loss.align_l1_loss_weight * align_l1_loss\
@@ -215,19 +253,9 @@ class EigeNetTrainer(BaseTrainer):
         train_losses["batch_total_loss"] = batch_total_loss
         train_losses["mrstft_loss"] = mrstft_loss
         train_losses["time_edc_loss"] = time_edc_loss
-        train_losses["spect_edc_loss"] = spect_edc_loss
         train_losses["align_l1_loss"] = align_l1_loss
         train_losses["align_edc_loss"] = align_edc_loss
         #train_losses["env_loss"] = env_loss
-        
-        # print(f"*"*20)
-        # print(f"检查loss")
-        # print(f"batch_total_loss: {batch_total_loss.item()}")
-        # print(f"mrstft_loss: {mrstft_loss.item()}")
-        # print(f"time_edc_loss: {time_edc_loss.item()}")
-        # print(f"spect_edc_loss: {spect_edc_loss.item()}")
-        # print("--------------------------------")
-        # exit()
         
         self.optimizer.zero_grad()
         self.accelerator.backward(total_loss)
@@ -238,15 +266,15 @@ class EigeNetTrainer(BaseTrainer):
         self.optimizer.step()
         self.scheduler.step()
 
-        for item in train_losses:
-            train_losses[item] = train_losses[item].item()
+        # One device-to-host transfer replaces a synchronization per metric.
+        loss_values = torch.stack([loss.detach().reshape(()) for loss in train_losses.values()]).cpu().tolist()
+        train_losses = dict(zip(train_losses, loss_values))
+        self.current_loss = train_losses["batch_total_loss"]
 
-        self.current_loss = total_loss.item()
-
-        train_losses["batch_size"] = all_ir_z.shape[0]
+        train_losses["batch_size"] = ref_ir_z.shape[0]
         train_losses["learning_rate"] = self.optimizer.param_groups[0]["lr"]
 
-        return (total_loss.item(), train_losses, train_stats)
+        return (self.current_loss, train_losses, train_stats)
 
     def _train_epoch(self):
         r"""Training epoch. Should return average loss of a batch (sample) over
@@ -354,85 +382,49 @@ class EigeNetTrainer(BaseTrainer):
 
         return epoch_sum_loss, epoch_losses
     
-    @torch.no_grad()
-    def _valid_step(self, batch):
-        valid_metrics = {}
-
-        all_ir = batch["all_ir"].to(self.accelerator.device)  # [B, N, 1, t]
-        gt_tgt_ir = all_ir[:,-1]
-        all_cc_src_loc = batch["all_cc_src_loc"].to(self.accelerator.device) # [B, N, 3]
-        cc_depth_map = batch["cc_depth_map"].to(self.accelerator.device) # [B, 256, 512, 3]
-        
-        all_ir_z = self.encode_audio_to_z(all_ir) #(B, N, t, 1024)
-        if not self.aligner_activate:
-            pred_tgt_ir_z = self.model(all_ir_z, cc_depth_map, all_cc_src_loc)
-        else:
-            pred_tgt_ir_z, pred_align_features = self.model(all_ir_z, cc_depth_map, all_cc_src_loc)
-            del pred_align_features
-            
-        pred_tgt_ir = self.decode_z_to_audio(pred_tgt_ir_z.transpose(-1, -2))
-        valid_length = int(self.cfg.valid.duration * self.sample_rate)
-        pred_tgt_ir = pred_tgt_ir[...,:valid_length].cpu().numpy()
-        gt_tgt_ir = gt_tgt_ir[...,:valid_length].cpu().numpy()
-        batch_edt_error_list, batch_c50_error_list, batch_t60_error_list, batch_count_outlier = compute_metrics(gt_tgt_ir, pred_tgt_ir, self.evaluator)
-        
-        valid_metrics["edt_error"] = round(np.mean(batch_edt_error_list), 4)
-        valid_metrics["c50_error"] = round(np.mean(batch_c50_error_list), 4)
-        valid_metrics["t60_error"] = round(np.mean(batch_t60_error_list), 4)
-        valid_metrics["count_outlier"] = int(batch_count_outlier)
-
-        return valid_metrics, gt_tgt_ir, pred_tgt_ir
-
-
     def _valid(self):
-        
-        if isinstance(self.model, dict):
-            for key in self.model.keys():
-                self.model[key].eval()
-        else:
-            self.model.eval()
-
-        val_metrics_sum = {}
-        val_count = 0
-
-        for batch in self.valid_dataloader:
-
-            device = self.accelerator.device
-            for k, v in batch.items():
-                if isinstance(v, torch.Tensor):
-                    batch[k] = v.to(device)
-            
-
-            valid_metrics, gt_tgt_ir, pred_tgt_ir = self._valid_step(batch)
-            if self.cfg.valid.visualize_interval != 0:
-                if val_count % self.cfg.valid.visualize_interval == 0:
-                    if self.accelerator.is_main_process:
-                        vis_gt_tgt_ir = gt_tgt_ir[0]
-                        vis_pred_tgt_ir = pred_tgt_ir[0]
-                        fig, axs = plt.subplots(2, 1, figsize=(10, 10))
-
-                        plot_waveform(vis_gt_tgt_ir, self.sample_rate, title="GT", ax=axs[0])
-                        plot_waveform(vis_pred_tgt_ir, self.sample_rate, title="Pred", ax=axs[1])
-                        cur_visualize_dir = os.path.join(self.visualize_dir, str(self.step))
-                        os.makedirs(cur_visualize_dir, exist_ok=True)
-                        png_path = os.path.join(cur_visualize_dir, f"{val_count}.png")
-                        plt.savefig(png_path)
-                        plt.close()
-            
-
-            for k, v in valid_metrics.items():
-                if k not in val_metrics_sum:
-                    val_metrics_sum[k] = 0.0
-                val_metrics_sum[k] += v
-            val_count += 1
-
-
-        avg_metrics = {k: v / val_count for k, v in val_metrics_sum.items()}
-        
-        if isinstance(self.model, dict):
-            for key in self.model.keys():
-                self.model[key].train()
-        else:
-            self.model.train()
-            
-        return avg_metrics
+        # DDP forwards may synchronize buffers. Evaluation shards can have
+        # different lengths and reference counts, so use the shared underlying
+        # weights without the DDP wrapper and aggregate only after every shard.
+        model_was_training = self.model.training
+        codec_was_training = self.audio_codec.training
+        self.model.eval()
+        self.audio_codec.eval()
+        try:
+            if not hasattr(self, "_evaluation_predictor"):
+                raw_model = self.accelerator.unwrap_model(
+                    self.model, keep_torch_compile=False,
+                )
+                if self.accelerator.device.type == "cuda":
+                    # A separate cached forward graph shares parameters with the
+                    # training model; it does not copy stale checkpoint weights.
+                    raw_model = torch.compile(
+                        raw_model, backend="inductor", dynamic=True,
+                        options={"split_reductions": False},
+                    )
+                self._evaluation_predictor = EigeNetPredictor(
+                    raw_model, self.audio_codec, self.accelerator.device,
+                )
+            summary = evaluate_loader(
+                self.valid_dataloader, self._evaluation_predictor,
+            ).summary()
+            summary["evaluation"] = {
+                "step": self.step,
+                "seed": self.cfg.evaluation.seed,
+                "max_references": self.cfg.evaluation.max_references,
+                "weights": "current_training_parameters",
+            }
+            if self.accelerator.is_main_process:
+                # Each invocation gets a new directory, including a repeated
+                # step after resume; existing evaluation results are preserved.
+                import tempfile
+                output_root = os.path.join(self.exp_dir, "evaluation")
+                os.makedirs(output_root, exist_ok=True)
+                output_dir = tempfile.mkdtemp(
+                    prefix=f"step-{self.step:07d}-", dir=output_root,
+                )
+                write_summary(summary, output_dir)
+            return scalar_log_values(summary)
+        finally:
+            self.model.train(model_was_training)
+            self.audio_codec.train(codec_was_training)

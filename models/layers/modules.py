@@ -18,6 +18,7 @@ import torch.nn.functional as F
 import torchaudio
 import torchvision
 from torch import nn
+from torch.nn.attention.flex_attention import flex_attention
 from x_transformers.x_transformers import apply_rotary_pos_emb
 
 from models.layers.utils import is_package_available
@@ -228,42 +229,23 @@ class Attention(nn.Module):
 
 # Attention processor
 
-if is_package_available("flash_attn"):
-    from flash_attn import flash_attn_func, flash_attn_varlen_func
-    from flash_attn.bert_padding import pad_input, unpad_input
-
-
-
-
 class AttnProcessor:
     def __init__(
         self,
         pe_attn_head: int | None = None,  # number of attention head to apply rope, None for all
-        attn_backend: str = "torch",  # "torch" or "flash_attn"
+        attn_backend: str = "flex",
         attn_mask_enabled: bool = True,
         return_attn_weight: bool = False,
     ):
-        if attn_backend == "flash_attn":
-            assert is_package_available("flash_attn"), "Please install flash-attn first."
+        if attn_backend != "flex":
+            raise ValueError(f"Self attention requires attn_backend='flex', got {attn_backend!r}")
+        if return_attn_weight:
+            raise ValueError("FlexAttention does not support returning attention weights")
 
         self.pe_attn_head = pe_attn_head
         self.attn_backend = attn_backend
         self.return_attn_weight = return_attn_weight
         self.attn_mask_enabled = attn_mask_enabled
-
-    def get_attn_weight(self, query, key, attn_mask=None):
-        # SDPA 
-        L, S = query.size(-2), key.size(-2)
-        scale_factor = 1 / math.sqrt(query.size(-1))
-        
-        # 1. compute the attn score: (Q @ K.T) * scale
-        # Softmax 
-        attn_weight = torch.softmax((query @ key.transpose(-2, -1) * scale_factor * attn_mask), dim=-1)
-        
-        # 2. export the attn weight
-        self.latest_attn_weights = attn_weight 
-
-        return attn_weight
 
     def __call__(
         self,
@@ -306,40 +288,37 @@ class AttnProcessor:
                 key = apply_rotary_pos_emb(key, freqs, k_xpos_scale)
 
 
-        if self.attn_backend == "torch":
-            # mask. e.g. inference got a batch with different target durations, mask out the padding
-            if self.attn_mask_enabled and mask is not None:
-                attn_mask = mask
-                q_mask = attn_mask.unsqueeze(1).unsqueeze(-1)  # 'b n -> b 1 n 1'
-                k_mask = attn_mask.unsqueeze(1).unsqueeze(1)  # 'b n -> b 1 1 n'
-                attn_mask = q_mask & k_mask
-            else:
-                attn_mask = None
-            x = F.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=0.0, is_causal=False)
-            x = x.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
+        score_mod = None
+        if self.attn_mask_enabled and mask is not None:
+            # True marks valid tokens. Give empty samples one safe key;
+            # all their query outputs are zeroed below after projection.
+            token_mask = mask
+            has_valid_key = token_mask.any(dim=-1)
 
-        elif self.attn_backend == "flash_attn":
-            query = query.transpose(1, 2)  # [b, h, n, d] -> [b, n, h, d]
-            key = key.transpose(1, 2)
-            value = value.transpose(1, 2)
-            if self.attn_mask_enabled and mask is not None:
-                query, indices, q_cu_seqlens, q_max_seqlen_in_batch, _ = unpad_input(query, mask)
-                key, _, k_cu_seqlens, k_max_seqlen_in_batch, _ = unpad_input(key, mask)
-                value, _, _, _, _ = unpad_input(value, mask)
-                x = flash_attn_varlen_func(
-                    query,
-                    key,
-                    value,
-                    q_cu_seqlens,
-                    k_cu_seqlens,
-                    q_max_seqlen_in_batch,
-                    k_max_seqlen_in_batch,
-                )
-                x = pad_input(x, indices, batch_size, q_max_seqlen_in_batch)
-                x = x.reshape(batch_size, -1, attn.heads * head_dim)
-            else:
-                x = flash_attn_func(query, key, value, dropout_p=0.0, causal=False)
-                x = x.reshape(batch_size, -1, attn.heads * head_dim)
+            def score_mod(score, batch, head, query_idx, key_idx):
+                valid_key = token_mask[batch, key_idx] | (~has_valid_key[batch] & (key_idx == 0))
+                return torch.where(valid_key, score, float("-inf"))
+
+        # Match SDPA autocast: normalization/rotary can promote Q/K to FP32,
+        # while V retains the projection dtype required for all Flex inputs.
+        query = query.to(value.dtype)
+        key = key.to(value.dtype)
+        # The aligner uses 256-wide heads. Default Triton tiles exceed the
+        # RTX 4090 shared-memory limit; smaller tiles preserve the same attention
+        # calculation and also bound the backward kernel's shared-memory use.
+        kernel_options = None
+        if head_dim >= 256:
+            kernel_options = {
+                "fwd_BLOCK_M": 32, "fwd_BLOCK_N": 32,
+                "bwd_BLOCK_M1": 32, "bwd_BLOCK_N1": 32,
+                "bwd_BLOCK_M2": 32, "bwd_BLOCK_N2": 32,
+                "num_stages": 2,
+            }
+        x = flex_attention(
+            query, key, value, score_mod=score_mod, scale=head_dim**-0.5,
+            kernel_options=kernel_options,
+        )
+        x = x.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
 
         x = x.to(query.dtype)
 
@@ -351,10 +330,7 @@ class AttnProcessor:
         if mask is not None:
             mask = mask.unsqueeze(-1)
             x = x.masked_fill(~mask, 0.0)
-        if self.return_attn_weight:
-            return x, self.get_attn_weight(query, key, attn_mask).detach()
-        else:
-            return x
+        return x
 
 
 # Joint Attention processor for MM-DiT
@@ -471,7 +447,7 @@ class DiTBlock(nn.Module):
         dropout=0.1,
         qk_norm=None,
         pe_attn_head=None,
-        attn_backend="torch",  # "torch" or "flash_attn"
+        attn_backend="flex",
         attn_mask_enabled=True,
     ):
         super().__init__()

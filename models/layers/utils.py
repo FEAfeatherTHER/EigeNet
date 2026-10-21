@@ -115,71 +115,13 @@ def plot_waveform(waveform, sr, title="Waveform", ax=None):
         ax.set_title(title)
 
 def compute_metrics(batch_gt_ir, batch_pred_ir, evaluator):
+    """Return named per-sample metrics; accumulation belongs to the evaluator.
+
+    This replaces the former four-tuple/batch-average interface. All signals
+    reach the evaluator before its separate signal and acoustic crops.
     """
-        gt_ir : (b, 1, t)
-        pred_ir : (b, 1, t)
-    """
-    if batch_gt_ir.ndim == 3:
-        batch_gt_ir = batch_gt_ir[:,0]#(b, t)
-    if batch_pred_ir.ndim == 3:
-        batch_pred_ir = batch_pred_ir[:,0]#(b, t)
-    
-    count_outlier = False
-    bsz = batch_gt_ir.shape[0]
-    batch_edt_error_list = []
-    batch_c50_error_list = []
-    batch_t60_relative_error_list = []
-    batch_t60_absolute_error_list = []
-    batch_count_outlier = 0
-    for i in range(bsz):
-        gt_ir = batch_gt_ir[i]
-        pred_ir = batch_pred_ir[i]
+    return evaluator.evaluate_batch(batch_gt_ir, batch_pred_ir)
 
-        gt_edt = evaluator.measure_edt(gt_ir)
-        pred_edt = evaluator.measure_edt(pred_ir)
-        edt_error = np.abs(gt_edt - pred_edt)
-        if edt_error != np.inf and edt_error != -np.inf and gt_edt != -np.inf and pred_edt != -np.inf:
-            batch_edt_error_list.append(edt_error)
-        else:
-            count_outlier = True
-        gt_c50 = evaluator.measure_clarity(gt_ir)
-        pred_c50 = evaluator.measure_clarity(pred_ir)
-        c50_error = np.abs(gt_c50 - pred_c50)
-        if c50_error != np.inf and c50_error != -np.inf and gt_c50 != -np.inf and pred_c50 != -np.inf:
-            batch_c50_error_list.append(c50_error)
-        else:
-            count_outlier = True
-        gt_t60 = evaluator.measure_rt60(gt_ir)
-        pred_t60 = evaluator.measure_rt60(pred_ir)
-        t60_relative_error = np.abs(gt_t60 - pred_t60) / gt_t60 * 100.
-        t60_absolute_error = (pred_t60 - gt_t60) * 1000. #ms
-        if np.abs(t60_relative_error) != np.inf and np.abs(t60_absolute_error) != np.inf:
-            batch_t60_relative_error_list.append(t60_relative_error)
-            batch_t60_absolute_error_list.append(t60_absolute_error)
-        else:
-            count_outlier = True
-
-            # print(f"*"*20)
-            # print(f"gt_t60: {gt_t60}")
-            # print(f"pred_t60: {pred_t60}")
-            # print(f"*"*20)
-            # sample_length = int(0.363 * 16000)
-            # gt_tgt_ir = gt_ir[None, :sample_length]
-            # pred_tgt_ir = pred_ir[None, :sample_length]
-            # fig, axs = plt.subplots(2, 1, figsize=(10, 10))
-
-            # plot_waveform(gt_tgt_ir, 16000, title="GT", ax=axs[0])
-            # plot_waveform(pred_tgt_ir, 16000, title="Pred", ax=axs[1])
-            # pdf_path = os.path.join('/data/250010171/code/EigeNet/data/debug', f"debug.pdf")
-            # plt.savefig(pdf_path)
-            # plt.close()
-            # print(f"save pdf to {pdf_path}")
-            # exit()
-
-        
-        batch_count_outlier += count_outlier
-    
-    return batch_edt_error_list, batch_c50_error_list, batch_t60_relative_error_list, batch_count_outlier
 
 class StreamingMean:
     def __init__(self):
@@ -196,102 +138,42 @@ class StreamingMean:
             # 动态更新公式
             self.mean += (x - self.mean) / self.n
 
-def extract_stft_energy_db(rir_tensor, sr=16000, frame_rate=50, 
-                                  eps=1e-10):
-    """
-    使用 STFT 从 RIR 中提取低、中、高三个频段的能量分布图 (dB)。
-    
-    参数:
-    - rir_tensor: (B, N) 或 (N,) 的 torch.Tensor
-    - sr: 采样率，默认 16000
-    - frame_rate: 能量统计帧率(Hz)，默认 50Hz (即每帧 20ms)
+class OctaveEnergyFeatures(torch.nn.Module):
+    """Fixed STFT setup for alignment targets, with reusable window/band slices."""
 
-    """
-    if rir_tensor.ndim == 1:
-        rir_tensor = rir_tensor.unsqueeze(0)
-        
-    B, N = rir_tensor.shape
-    
-    # 1. 计算 STFT 参数
-    hop_length = sr // frame_rate
-    n_fft = 1024       
-    win_length = 1024  
-    
-    window = torch.hann_window(win_length).to(rir_tensor.device)
-    
-    # 2. 计算 STFT (center=False 避免边缘能量泄漏)
-    stft_out = torch.stft(
-        rir_tensor, 
-        n_fft=n_fft, 
-        hop_length=hop_length, 
-        win_length=win_length, 
-        window=window, 
-        center=True, 
-        return_complex=True
-    )
-    
-    # 3. 功率谱
-    power_spec = torch.abs(stft_out) ** 2
-    
-    # 6. 转为 dB 域
-    energy_db = 10 * torch.log10(power_spec + eps)
-    
-    return energy_db
+    def __init__(self, sr=16000, frame_rate=50, eps=1e-10):
+        super().__init__()
+        self.hop_length = sr // frame_rate
+        self.n_fft = 1024
+        self.eps = eps
+        self.register_buffer("window", torch.hann_window(self.n_fft), persistent=False)
+        bands = torch.tensor([
+            (31.25, 62.5), (62.5, 125), (125, 250), (250, 500),
+            (500, 1000), (1000, 2000), (2000, 4000), (4000, 7999.0),
+        ])
+        # The original masks used low <= frequency < high. Resolve those fixed
+        # boundaries once on CPU, avoiding GPU boolean indexing and .any() waits.
+        freqs = torch.linspace(0, sr / 2, self.n_fft // 2 + 1)
+        self.band_slices = tuple(tuple(pair) for pair in torch.searchsorted(freqs, bands).tolist())
 
-def convert_stft_db_to_octave_db(stft_db_matrix, sr=16000, eps=1e-10):
-    """
-    将 STFT 的功率频谱图 (dB) 聚合成 8 倍频程的能量分布图 (dB)。
-    
-    参数:
-    - stft_db_matrix: (B, F_bins, T_frames) 或 (F_bins, T_frames) 的 STFT dB 张量
-    - sr: 采样率，用于推算每个 F_bin 的真实物理频率
-    
-    返回:
-    - octave_db: (B, 8, T_frames) 的倍频程能量张量 (dB)
-    """
-    # 兼容没有 Batch 的输入
-    if stft_db_matrix.ndim == 2:
-        stft_db_matrix = stft_db_matrix.unsqueeze(0)
-        
-    B, F_bins, T_frames = stft_db_matrix.shape
-    device = stft_db_matrix.device
-    
-    # 1. 转换回线性功率域 (Linear Power)
-    # 因为输入是 dB，反向公式为 Power = 10^(dB / 10)
-    power_linear = 10 ** (stft_db_matrix / 10.0)
-    
-    # 2. 计算每个 frequency bin 对应的物理频率
-    freqs = torch.linspace(0, sr / 2, F_bins).to(device)
-    
-    # 3. 定义 8 个倍频程的上下边界 (Hz)
-    bands = [
-        (31.25, 62.5), (62.5, 125), (125, 250), (250, 500),
-        (500, 1000), (1000, 2000), (2000, 4000), (4000, 7999.0)
-    ]
-    
-    octave_energies = []
-    
-    # 4. 根据频率掩码聚合能量
-    for low, high in bands:
-        # 寻找属于当前倍频程的频率 Bin
-        mask = (freqs >= low) & (freqs < high)
-        
-        # 如果 STFT 分辨率太低导致某个频段没有 bin (通常不会，除非 n_fft 极小)
-        if not mask.any():
-            band_energy = torch.zeros(B, T_frames, device=device)
-        else:
-            # 将属于该频段的所有 Bin 的能量在频率轴 (dim=1) 上相加
-            band_energy = power_linear[:, mask, :].sum(dim=1)
-            
-        octave_energies.append(band_energy)
-        
-    # 堆叠为 (B, 8, T_frames)
-    octave_power = torch.stack(octave_energies, dim=1)
-    
-    # 5. 重新转回 dB 域
-    octave_db = 10 * torch.log10(octave_power + eps)
-    
-    return octave_db
+    def forward(self, audio):
+        if audio.ndim == 3:
+            audio = audio[:, 0]
+        elif audio.ndim != 2:
+            raise ValueError("Alignment audio must have shape (B, T) or (B, 1, T)")
+        spectrum = torch.stft(
+            audio, n_fft=self.n_fft, hop_length=self.hop_length,
+            win_length=self.n_fft, window=self.window, center=True, return_complex=True,
+        )
+        # Preserve the original dB round-trip and epsilon placement exactly.
+        energy_db = 10 * torch.log10(torch.abs(spectrum) ** 2 + self.eps)
+        power = 10 ** (energy_db / 10.0)
+        octave_power = torch.stack(
+            [power[:, low:high, :].sum(dim=1) for low, high in self.band_slices],
+            dim=1,
+        )
+        return (10 * torch.log10(octave_power + self.eps)).transpose(1, 2)
+
 
 def spectrogram_edc_loss(pred_db, gt_db, eps=1e-10):
     """

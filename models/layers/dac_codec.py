@@ -54,15 +54,8 @@ class DAC(nn.Module):
         return latents
     
     def encode_z(self, x):
-        """
-        x : (b, 1, t)
-        z: (b, 1024, t)
-        codes: (b, 12, t)
-        latents: (b, 96, t)
-        """
-        
-        z, codes, latents, code_loss, commit_loss = self.model.encode(x)
-        return z
+        """Return continuous encoder features before quantization: [B, 1024, T]."""
+        return self.model.encoder(x)
 
 
     def decode(self, codes, layer = None):
@@ -83,12 +76,7 @@ class DAC(nn.Module):
         return audio
     
     def decode_z(self, z):
-        """
-        self.model.quantizer.from_codes(codes) returns:
-            z: (b, 1024, t)
-            latents: (b, 96, t)
-            codes: (b, 12, t)
-        """
+        """Decode continuous features [B, 1024, T] directly to audio."""
         audio = self.model.decode(z)
         return audio
 

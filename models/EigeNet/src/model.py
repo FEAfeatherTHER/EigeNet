@@ -97,7 +97,7 @@ class EigeNetTransformer(nn.Module):
                 latent_dim = self.hidden_size,
                 qk_norm = "rms_norm",
                 pe_attn_head = None,
-                attn_backend = "torch",
+                attn_backend = "flex",
                 attn_mask_enabled = False,
                 long_skip_connection = False,
                 checkpoint_activations = False,
@@ -185,29 +185,31 @@ class EigeNetTransformer(nn.Module):
         time_ebd = self.ir_time_interval_embedding(time_interval) #(T, dim)
         return time_ebd
 
-    def prepare_tokens(self, ir_z, depth_map, loc, irs_num, bsz):
+    def prepare_tokens(self, ref_ir_z, depth_map, loc):
         """
         Args:
            depth_map: (B, 3, 256, 512)
-           loc: (B, N, 3)
-           ir_z: (B, N, T, 1024)
-           irs_num: int
-           bsz: int
+           loc: (B, K+1, 3), references followed by target
+           ref_ir_z: (B, K, T, 1024), reference encodings only
         Returns:
            label_tokens: (B, N, 1, dim)
            ir_tokens: (B, N, t, dim)
         """
+        irs_num = loc.shape[1]
         loc_tokens = self.get_loc_tokens(loc) #(B, N, 1, 0.5*dim)
         geo_map = depth_map.unsqueeze(1) - loc.unsqueeze(-1).unsqueeze(-1)#(B, N, 3, 256, 512)
-        geo_map = torch.cat([geo_map, depth_map.unsqueeze(1).repeat(1, irs_num, 1, 1, 1)], dim = 2)#(B, N, 6, 256, 512)
+        # expand avoids an extra copy before cat materializes the geometry input.
+        geo_map = torch.cat([geo_map, depth_map.unsqueeze(1).expand(-1, irs_num, -1, -1, -1)], dim = 2)#(B, N, 6, 256, 512)
         B, N, _, H, W = geo_map.shape
         geo_map = rearrange(geo_map, "b n c h w -> (b n) c h w")
         geo_tokens = self.get_depth_tokens(geo_map) #(B * N, 1, 0.5*dim)
         geo_tokens = rearrange(geo_tokens, "(b n) 1 d -> b n 1 d", n = N) #(B, N, 1, 0.5*dim)
         label_tokens = torch.cat([loc_tokens, geo_tokens], dim = -1) #(B, N, 1, dim)
         time_tokens = self.get_time_tokens(self.ir_time_interval) #(T, dim)
-        tgt_ir_init_tokens = time_tokens.unsqueeze(0).unsqueeze(0).repeat(B, 1, 1, 1) #(B, 1, T, dim)
-        ref_ir_tokens = ir_z[:,:-1]#(B, N-1, t, 1024)
+        tgt_ir_init_tokens = time_tokens.unsqueeze(0).unsqueeze(0).expand(B, 1, -1, -1) #(B, 1, T, dim)
+        # The target is initialized from time/geometry, never from its audio.
+        # Its DAC encoding is therefore no longer computed by the caller.
+        ref_ir_tokens = ref_ir_z
         if self.aligner_activate:
             tgt_ir_init_tokens = tgt_ir_init_tokens.squeeze(1)# (B, T, dim)
             tgt_label_tokens = label_tokens[:, -1, 0]#(B, dim)
@@ -226,15 +228,12 @@ class EigeNetTransformer(nn.Module):
            ir_tokens: (B, N, T, D)
            label_tokens: (B, N, 1, D)
         Returns:
-           ir_tokens: (B, N, T, 2D)
-           label_tokens: (B, N, 1, D)
+           final target tokens: (B, T, 2D)
         """
         B, N, T, D = ir_tokens.shape
         frame_idx = 0
         global_idx = 0
-        out_list = []
-        label_list = []
-        for depth_idx, aa_block in enumerate(self.aa_order_list):
+        for aa_block in self.aa_order_list:
             for attn_type in aa_block:
                 if attn_type == 'f':
                     f_x = torch.cat([label_tokens, ir_tokens], dim = -2)#(B, N, T+1, D)
@@ -248,47 +247,35 @@ class EigeNetTransformer(nn.Module):
                     label_tokens = g_x[:,:,0:1]
                 else:
                     raise ValueError(f"Invalid attention type: {attn_type}")
-            for i in range(len(frame_intermediates)):
-                concat_inter = torch.cat([frame_intermediates[i], global_intermediates[i]], dim = -1)#(B, N, T, 2D)
-                out_list.append(concat_inter)
-            del concat_inter
-        return out_list
+        # Only the final target tokens reach ir_decoder. Earlier concatenations
+        # and reference/label slices had no consumers; the attention path stays intact.
+        return torch.cat(
+            [frame_intermediates[-1][:, -1, 1:], global_intermediates[-1][:, -1, 1:]],
+            dim=-1,
+        )
 
 
-    def forward(self, ir_z, cc_depth_map, cc_src_loc, align_feat_ir = None):
+    def forward(self, ref_ir_z, cc_depth_map, cc_src_loc):
         """
         Args:
-           ir_z: (B, N, D, D)
+           ref_ir_z: (B, K, T, D), reference encodings only
            cc_depth_map: (B, 3, 256, 512)
-           cc_src_loc: (B, N, 3)
+           cc_src_loc: (B, K+1, 3), references followed by target
         Return:
            tgt_ir_tokens: (B, T, D)
         """
-        bsz, irs_num = ir_z.shape[0], ir_z.shape[1]
+        # Infer the total source count from positions; the audio input excludes
+        # the target. This preserves its time-based initialization for every K.
+        if cc_src_loc.shape[1] != ref_ir_z.shape[1] + 1:
+            raise ValueError("Source positions must contain all references followed by one target")
         if self.aligner_activate:
-            label_tokens, ir_tokens, align_feature = self.prepare_tokens(ir_z, cc_depth_map, cc_src_loc, irs_num, bsz)
+            label_tokens, ir_tokens, align_feature = self.prepare_tokens(ref_ir_z, cc_depth_map, cc_src_loc)
         else:
-            label_tokens, ir_tokens = self.prepare_tokens(ir_z, cc_depth_map, cc_src_loc, irs_num, bsz)
-        # print(f"检查pre_embedding输出")
-        # print(f"label_tokens: {label_tokens.shape}") #(B, N, 1, D), 
-        # print(f"ir_tokens: {ir_tokens.shape}") #(B, N, T, D)
-        # print("--------------------------------")
-        # #exit()
-        out_list = self.aggregator(ir_tokens, label_tokens)
-        # print(f"检查aggregator输出")
-        # print(f"out_list: {len(out_list)}")
-        # print(f"out_list[0]: {out_list[0].shape}")
-        # print("--------------------------------")
-        last_concat_inter = out_list[-1] # (B, N, T+1, 2D)
-        tgt_ir_tokens = last_concat_inter[:, -1, 1:]#(B, T, 2D)
+            label_tokens, ir_tokens = self.prepare_tokens(ref_ir_z, cc_depth_map, cc_src_loc)
+        tgt_ir_tokens = self.aggregator(ir_tokens, label_tokens)
         out_tgt_ir_tokens = self.ir_decoder(tgt_ir_tokens)#(B, T, D)
-        # print(f"检查ir_decoder输出")
-        # print(f"tgt_ir_tokens: {tgt_ir_tokens.shape}") #(B, T, D)
-        # print("--------------------------------")
-        #exit()
         
         if self.aligner_activate:
             return out_tgt_ir_tokens, align_feature
         else:
-            del out_list, align_feature
             return out_tgt_ir_tokens

@@ -12,6 +12,7 @@ output/
 swanlog/
 egs/codec/
 _pg/
+_exp/
 
 *.log
 .ipynb_checkpoints
@@ -23,3 +24,6 @@ __pycache__/
 
 models/codec/amphion_codec
 models/codec/kmeans
+
+#codex
+docs/

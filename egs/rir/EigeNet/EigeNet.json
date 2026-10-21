@@ -2,9 +2,9 @@
     "model_type": "EigeNet",
     "dataset": {
         "rir_list": [
-            ["/mnt/workspace/jingchong/mycode/RIR/EigeNet/data/AcousticRooms_train.jsonl", 1]
+            ["/mnt/workspace/jingchong/code/_RIR/EigeNet/data/AcousticRooms_train.jsonl", 1]
         ],
-        "test_rir_list": ["/mnt/workspace/jingchong/mycode/RIR/EigeNet/data/AcousticRooms_test.jsonl"],
+        "test_rir_list": ["/mnt/workspace/jingchong/code/_RIR/EigeNet/data/AcousticRooms_test.jsonl"],
         "depth_map_root": "/mnt/data1/jingchong/AcousticRooms/depth_map/",
         "rir_root": "/mnt/data1/jingchong/AcousticRooms/single_channel_ir/",
         "metadata_root": "/mnt/data1/jingchong/AcousticRooms/metadata/",
@@ -17,7 +17,7 @@
         },
     "model": {
         "DAC":{
-            "path": "/mnt/workspace/jingchong/ckpt/pretained/dac/ckpt/weights_16k.pth"
+            "path": "/mnt/workspace/jingchong/code/_RIR/EigeNet/ckpts/dac/weights_16k.pth"
         },
         "eigenet_transformer": {
             "hidden_size": 1024,
@@ -37,7 +37,7 @@
                     "ff_mult": 2,
                     "qk_norm": "rms_norm",
                     "pe_attn_head": null,
-                    "attn_backend": "torch",
+                    "attn_backend": "flex",
                     "attn_mask_enabled": true,
                     "checkpoint_activations": false,
                     "return_attn": false, 
@@ -57,7 +57,7 @@
                 "ff_mult": 2,
                 "qk_norm": "rms_norm",
                 "pe_attn_head": null,
-                "attn_backend": "torch",
+                "attn_backend": "flex",
                 "attn_mask_enabled": true,
                 "checkpoint_activations": false,
                 "return_attn": false, 
@@ -68,7 +68,6 @@
     "loss":{
         "mrstft_loss_weight": 1.0,
         "time_edc_loss_weight": 1.0,
-        "spect_edc_loss_weight": 0.0,
         "env_loss_weight": 0.0,
         "align_l1_loss_weight": 0.01,
         "align_edc_loss_weight": 0.01,
@@ -79,8 +78,12 @@
             "alpha": 0.99,
         }
     },
-    "log_dir": "/mnt/workspace/jingchong/mycode/RIR/EigeNet/ckpts/EigeNet",
+    "log_dir": "/mnt/workspace/jingchong/code/_RIR/EigeNet/ckpts/EigeNet/rebuttal",
     "train": {
+        "rotation_augmentation": {
+            "enabled": true,
+            "probability": 0.5
+        },
         "max_epoch": 10,
         "use_dynamic_batchsize": false,
         "max_tokens": 5000, 
@@ -121,6 +124,10 @@
         },
         "use_emilia_dataset": false
     },
+    "evaluation": {
+        "seed": 42,
+        "max_references": 8
+    },
     "valid":{
         "duration": 0.363,
         "batch_size": 36,
@@ -139,4 +146,4 @@
             },
         }
     }
-}   
+}

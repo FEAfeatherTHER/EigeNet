@@ -26,7 +26,7 @@ class Transformer_Block(nn.Module):
         dropout=0.1,
         qk_norm=None,
         pe_attn_head=None,
-        attn_backend="torch",  # "torch" or "flash_attn"
+        attn_backend="flex",
         attn_mask_enabled=True,
         return_attn=False,
     ):
@@ -185,7 +185,7 @@ class Transformer_Decoder(nn.Module):
         qk_norm=None,
         conv_layers=0,
         pe_attn_head=None,
-        attn_backend="torch",  # "torch" | "flash_attn"
+        attn_backend="flex",
         attn_mask_enabled=False,
         checkpoint_activations=False,
         return_attn= False,
@@ -245,7 +245,7 @@ class AA_Transformer_Decoder(nn.Module):
         qk_norm=None,
         conv_layers=0,
         pe_attn_head=None,
-        attn_backend="torch",  # "torch" | "flash_attn"
+        attn_backend="flex",
         attn_mask_enabled=False,
         checkpoint_activations=False,
         return_attn= False,
@@ -469,7 +469,7 @@ class DiT(nn.Module):
         latent_dim=100,
         qk_norm=None,
         pe_attn_head=None,
-        attn_backend="torch",  # "torch" | "flash_attn"
+        attn_backend="flex",
         attn_mask_enabled=False,
         long_skip_connection=False,
         checkpoint_activations=False,
