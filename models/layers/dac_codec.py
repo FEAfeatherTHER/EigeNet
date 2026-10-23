@@ -1,11 +1,11 @@
-import dac
+from dac.model.dac import DAC as DACModel
 import torch.nn as nn
 import torch
 from einops import rearrange
 class DAC(nn.Module):
     def __init__(self, path):
         super(DAC, self).__init__()
-        self.model = dac.DAC.load(path)
+        self.model = DACModel.load(path)
         for param in self.model.parameters():
             param.requires_grad = False
         self.model.eval()
@@ -77,7 +77,7 @@ class DAC(nn.Module):
     
     def decode_z(self, z):
         """Decode continuous features [B, 1024, T] directly to audio."""
-        audio = self.model.decode(z)
+        audio = self.model.decode(z)["audio"]
         return audio
 
     

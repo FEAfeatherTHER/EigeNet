@@ -193,7 +193,8 @@ class EigeNetTrainer(BaseTrainer):
         x = x[:, :min_length]
         y = y[:, :min_length]
         alignment_l1_loss = F.l1_loss(x, y)
-        alignment_edc_loss = spectrogram_edc_loss(x, y)
+        # EDC accumulates over the final (time) axis within each band.
+        alignment_edc_loss = spectrogram_edc_loss(x.transpose(1, 2), y.transpose(1, 2))
         return alignment_l1_loss, alignment_edc_loss
     
     def decode_z_to_audio(self, z):

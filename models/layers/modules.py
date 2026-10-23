@@ -306,14 +306,14 @@ class AttnProcessor:
         # The aligner uses 256-wide heads. Default Triton tiles exceed the
         # RTX 4090 shared-memory limit; smaller tiles preserve the same attention
         # calculation and also bound the backward kernel's shared-memory use.
-        kernel_options = None
+        # The decoding kernel cannot plan symbolic batch sizes.
+        kernel_options = {"FORCE_USE_FLEX_ATTENTION": True}
         if head_dim >= 256:
-            kernel_options = {
-                "fwd_BLOCK_M": 32, "fwd_BLOCK_N": 32,
-                "bwd_BLOCK_M1": 32, "bwd_BLOCK_N1": 32,
-                "bwd_BLOCK_M2": 32, "bwd_BLOCK_N2": 32,
-                "num_stages": 2,
-            }
+            kernel_options.update({
+                "BLOCK_M": 32, "BLOCK_N": 32,
+                "BLOCK_M1": 32, "BLOCK_N1": 32,
+                "BLOCK_M2": 32, "BLOCK_N2": 32,
+            })
         x = flex_attention(
             query, key, value, score_mod=score_mod, scale=head_dim**-0.5,
             kernel_options=kernel_options,

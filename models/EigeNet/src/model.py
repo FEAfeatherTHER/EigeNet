@@ -268,6 +268,9 @@ class EigeNetTransformer(nn.Module):
         # the target. This preserves its time-based initialization for every K.
         if cc_src_loc.shape[1] != ref_ir_z.shape[1] + 1:
             raise ValueError("Source positions must contain all references followed by one target")
+        # Depth resolution is fixed; reference count remains dynamic.
+        torch._dynamo.mark_static(cc_depth_map, 2)
+        torch._dynamo.mark_static(cc_depth_map, 3)
         if self.aligner_activate:
             label_tokens, ir_tokens, align_feature = self.prepare_tokens(ref_ir_z, cc_depth_map, cc_src_loc)
         else:

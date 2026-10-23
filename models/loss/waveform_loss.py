@@ -53,7 +53,6 @@ class loss_fn(nn.Module):
                 scale=None,
                 n_bins=None,
                 sample_rate=self.sr,
-                perceptual_weighting=False,
                 device=self.device,
             )
 
